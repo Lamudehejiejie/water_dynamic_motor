@@ -1,0 +1,198 @@
+// ============================================================================
+// LIBRARIES
+// ============================================================================
+#include <M5Unified.h>           // M5Stack hardware library
+#include <Dynamixel2Arduino.h>   // ROBOTIS library for Dynamixel motor control
+
+// ============================================================================
+// COMMUNICATION SETUP - RS485 via DMX Base
+// ============================================================================
+// You are using RS485 communication, NOT plain serial!
+// - M5Stack CoreS3 speaks TTL serial (3.3V logic)
+// - DMX Base converts TTL → RS485 (differential signaling A/B)
+// - Dynamixel motor speaks RS485
+//
+// The flow: M5Stack (TTL) → DMX Base (TTL→RS485) → Motor (RS485)
+//
+// M5Stack DMX Base Pin Configuration for CoreS3:
+#define DXL_SERIAL Serial1       // Use Serial1 hardware UART
+#define TXD_PIN 7                // GPIO 7 = TX (transmit data to DMX Base)
+#define RXD_PIN 10               // GPIO 10 = RX (receive data from DMX Base)
+#define DXL_DIR_PIN 6            // GPIO 6 = EN (direction control for RS485)
+                                 // EN pin controls TX/RX mode on RS485 chip
+
+// ============================================================================
+// DYNAMIXEL MOTOR SETTINGS
+// ============================================================================
+const uint8_t DXL_ID = 1;                    // Motor ID (set in motor, default 1)
+const float DXL_PROTOCOL_VERSION = 2.0;      // Protocol 2.0 for XL430
+const uint32_t DXL_BAUD_RATE = 1000000;      // Communication speed (bits/second)
+                                             // RS485 supports: 9600, 57600, 115200, 1000000, etc.
+                                             // 1000000 = 1 Mbps (modern Dynamixel default)
+                                             // Your motor is configured to 1000000 baud
+
+// Create Dynamixel controller object
+// This handles all the complex packet formatting and RS485 communication
+Dynamixel2Arduino dxl(DXL_SERIAL, DXL_DIR_PIN);
+
+// ============================================================================
+// MOTION CONTROL VARIABLES
+// ============================================================================
+unsigned long start_time = 0;      // Time when motion started (milliseconds)
+const int CYCLE_TIME = 5000;       // Total cycle duration: 5000ms = 5 seconds
+const int MAX_POSITION = 4095;     // XL430 position range: 0-4095 (0-360 degrees)
+                                   // 0 = 0°, 2048 = 180°, 4095 = 360°
+bool cycle_complete = false;       // Flag: has the motor completed one cycle?
+
+// ============================================================================
+// SETUP - Runs once when M5Stack starts
+// ============================================================================
+void setup() {
+    // Initialize M5Stack hardware (display, buttons, sensors)
+    auto cfg = M5.config();
+    M5.begin(cfg);
+
+    // Setup display
+    M5.Display.clear();
+    M5.Display.setTextSize(1);
+    M5.Display.setCursor(10, 10);
+    M5.Display.println("Motor Control");
+
+    // ========================================================================
+    // INITIALIZE RS485 COMMUNICATION
+    // ========================================================================
+    // Configure Serial1 UART with:
+    // - Baud rate: 1000000 (must match motor's baud rate setting)
+    // - SERIAL_8N1: 8 data bits, No parity, 1 stop bit (standard)
+    // - RX pin: GPIO 10, TX pin: GPIO 7
+    Serial1.begin(DXL_BAUD_RATE, SERIAL_8N1, RXD_PIN, TXD_PIN);
+
+    // Initialize Dynamixel library
+    // This sets up packet protocol and RS485 direction control (EN pin)
+    dxl.begin(DXL_BAUD_RATE);
+    dxl.setPortProtocolVersion(DXL_PROTOCOL_VERSION);
+
+    M5.Display.setCursor(10, 30);
+    M5.Display.println("Pinging motor...");
+
+    // ========================================================================
+    // FIND AND CONFIGURE MOTOR
+    // ========================================================================
+    // Send a "ping" packet to motor ID 1 via RS485
+    // If motor responds, it's connected and communicating correctly
+    if(dxl.ping(DXL_ID)) {
+        M5.Display.setCursor(10, 50);
+        M5.Display.println("Motor FOUND!");
+
+        // Configure motor for position control mode
+        dxl.torqueOff(DXL_ID);                        // Turn off torque (motor can move freely)
+        dxl.setOperatingMode(DXL_ID, OP_POSITION);    // Set to position control mode
+           
+        dxl.setProfileVelocity(DXL_ID, 100);// (motor moves to specific positions)
+        dxl.setProfileAcceleration(DXL_ID, 100);
+        dxl.torqueOn(DXL_ID);                         // Turn on torque (motor locked to position)
+
+        M5.Display.setCursor(10, 70);
+        M5.Display.println("Torque ON");
+    } else {
+        M5.Display.setCursor(10, 50);
+        M5.Display.println("Motor NOT found!");
+        // Check: wiring, power, baud rate, motor ID
+    }
+
+    // Record start time for motion timing
+    start_time = millis();  // millis() = milliseconds since M5Stack powered on
+    delay(1000);            // Wait 1 second before starting loop
+}
+
+// ============================================================================
+// LOOP - Runs continuously (many times per second)
+// ============================================================================
+void loop() {
+    M5.update();  // Update M5Stack internal state (buttons, etc.)
+
+    // ========================================================================
+    // CHECK IF MOTION IS COMPLETE
+    // ========================================================================
+    if (cycle_complete) {
+        // Motion finished - just display message and wait
+        M5.Display.setCursor(10, 100);
+        M5.Display.println("Cycle COMPLETE!     ");
+        M5.Display.setCursor(10, 120);
+        M5.Display.println("Upload again to repeat");
+        delay(100);
+        return;  // Exit loop() early, don't send more commands
+    }
+
+    // ========================================================================
+    // CALCULATE MOTION TIMING
+    // ========================================================================
+    // How many milliseconds have passed since we started?
+    unsigned long elapsed = millis() - start_time;
+
+    // Has 5 seconds passed? If yes, stop the motion
+    if (elapsed >= CYCLE_TIME) {
+        cycle_complete = true;
+        dxl.setGoalPosition(DXL_ID, 0);  // Return to position 0 (0 degrees)
+        return;
+    }
+
+    // ========================================================================
+    // CALCULATE SMOOTH POSITION WITH ACCELERATION
+    // ========================================================================
+    int position;
+
+    // Calculate progress through cycle: 0.0 (start) → 1.0 (end)
+    float progress = (float)elapsed / CYCLE_TIME;
+
+    // Apply smooth acceleration curve (sine wave for S-curve motion)
+    // This makes motor start slow, speed up in middle, slow down at end
+    // Without this, motor would move at constant speed (jerky)
+    float ease = (sin((progress - 0.5) * PI) + 1.0) / 2.0;
+
+    // Map the eased progress to motor position
+    // Cycle motion: 0 → 4095 → 0 (full rotation and back)
+    if (elapsed < CYCLE_TIME / 2) {
+        // First 2.5 seconds: move from 0 to 4095 (0° to 360°)
+        position = (int)(ease * MAX_POSITION * 2);
+        if (position > MAX_POSITION) position = MAX_POSITION;  // Safety limit
+    } else {
+        // Last 2.5 seconds: move from 4095 back to 0 (360° to 0°)
+        position = (int)((1.0 - ease) * MAX_POSITION * 2);
+        if (position > MAX_POSITION) position = MAX_POSITION;  // Safety limit
+    }
+
+    // ========================================================================
+    // SEND COMMAND TO MOTOR VIA RS485
+    // ========================================================================
+    // This function does the following automatically:
+    // 1. Formats a Dynamixel Protocol 2.0 packet with position data
+    // 2. Calculates CRC checksum for data integrity
+    // 3. Sets EN pin HIGH (enable transmit on RS485 transceiver)
+    // 4. Sends packet bytes via Serial1 → DMX Base → Motor
+    // 5. Sets EN pin LOW (enable receive on RS485 transceiver)
+    dxl.setGoalPosition(DXL_ID, position);
+
+    // ========================================================================
+    // READ CURRENT POSITION FROM MOTOR VIA RS485
+    // ========================================================================
+    // This function does the following automatically:
+    // 1. Sends a "read position" request packet to motor
+    // 2. Waits for motor to respond via RS485
+    // 3. Receives response packet
+    // 4. Validates CRC checksum
+    // 5. Extracts position value from packet
+    int32_t present_position = dxl.getPresentPosition(DXL_ID);
+
+    // ========================================================================
+    // DISPLAY DEBUG INFO ON SCREEN
+    // ========================================================================
+    M5.Display.setCursor(10, 100);
+    M5.Display.printf("Time: %lu ms  ", elapsed);      // Time elapsed in cycle
+    M5.Display.setCursor(10, 120);
+    M5.Display.printf("Goal: %d      ", position);     // Target position we sent
+    M5.Display.setCursor(10, 140);
+    M5.Display.printf("Curr: %d      ", present_position);  // Actual motor position
+
+    delay(1000/240.);  // Wait 50ms before next loop (sends commands ~20 times/second)
+}
