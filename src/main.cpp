@@ -3,6 +3,7 @@
 // ============================================================================
 #include <M5Unified.h>           // M5Stack hardware library
 #include <Dynamixel2Arduino.h>   // ROBOTIS library for Dynamixel motor control
+#include <UNIT_8ENCODER.h>       // M5Stack 8-Encoder Unit library
 
 // ============================================================================
 // COMMUNICATION SETUP - RS485 via DMX Base
@@ -36,13 +37,18 @@ const uint32_t DXL_BAUD_RATE = 1000000;      // Communication speed (bits/second
 Dynamixel2Arduino dxl(DXL_SERIAL, DXL_DIR_PIN);
 
 // ============================================================================
+// ENCODER SETUP - M5Stack 8-Encoder Unit
+// ============================================================================
+#define ENCODER_I2C_ADDR 0x41    // I2C address for 8-Encoder Unit
+UNIT_8ENCODER encoder;           // Create encoder object
+
+// ============================================================================
 // MOTION CONTROL VARIABLES
 // ============================================================================
-unsigned long start_time = 0;      // Time when motion started (milliseconds)
-const int CYCLE_TIME = 5000;       // Total cycle duration: 5000ms = 5 seconds
+bool encoder_found = false;        // Flag: encoder detected and working?
 const int MAX_POSITION = 4095;     // XL430 position range: 0-4095 (0-360 degrees)
                                    // 0 = 0°, 2048 = 180°, 4095 = 360°
-bool cycle_complete = false;       // Flag: has the motor completed one cycle?
+const int ENCODER_COUNTS_PER_REV = 60;  // Encoder counts per full rotation
 
 // ============================================================================
 // SETUP - Runs once when M5Stack starts
@@ -56,7 +62,29 @@ void setup() {
     M5.Display.clear();
     M5.Display.setTextSize(1);
     M5.Display.setCursor(10, 10);
-    M5.Display.println("Motor Control");
+    M5.Display.println("Motor + Encoder Control");
+
+    // ========================================================================
+    // INITIALIZE I2C FOR ENCODER
+    // ========================================================================
+    // M5Stack CoreS3 Port.A: SDA=GPIO2, SCL=GPIO1
+    Wire.begin(2, 1);  // Initialize I2C with SDA=GPIO2, SCL=GPIO1
+
+    // Initialize 8-Encoder Unit
+    if (encoder.begin(&Wire, ENCODER_I2C_ADDR, 2, 1)) {
+        M5.Display.setCursor(10, 20);
+        M5.Display.println("Encoder found!");
+
+        // Reset Channel 1 encoder to 0 at startup
+        encoder.resetCounter(0);  // Reset channel 0 (= Channel 1)
+
+        encoder_found = true;
+    } else {
+        M5.Display.setCursor(10, 20);
+        M5.Display.println("Encoder NOT found - HALT");
+        encoder_found = false;
+        while(1) { delay(100); }  // Stop here if no encoder
+    }
 
     // ========================================================================
     // INITIALIZE RS485 COMMUNICATION
@@ -84,22 +112,15 @@ void setup() {
         M5.Display.setCursor(10, 50);
         M5.Display.println("Motor FOUND!");
 
-        // Configure motor for position control mode
+        // Configure motor for EXTENDED position control mode (multi-turn)
         dxl.torqueOff(DXL_ID);                        // Turn off torque (motor can move freely)
-        dxl.setOperatingMode(DXL_ID, OP_POSITION);    // Set to position control mode
+        dxl.setOperatingMode(DXL_ID, OP_EXTENDED_POSITION);  // Extended position = unlimited rotations
 
-        // Set motion profile (controls how motor moves between positions)
-        // Profile Velocity: Movement speed in rev/min
-        //   - 0 = use maximum speed from firmware
-        //   - 100 = slow, smooth movement (good for testing)
-        //   - Range: 0-1023 for XL430
-        dxl.setProfileVelocity(DXL_ID, 100);
-
-        // Profile Acceleration: Acceleration/deceleration rate in rev/min²
-        //   - 0 = use maximum acceleration (instant start/stop, jerky)
-        //   - 100 = gentle acceleration (smooth start/stop)
-        //   - Range: 0-32767 for XL430
-        dxl.setProfileAcceleration(DXL_ID, 100);
+        // Set motion profile for REAL-TIME encoder control
+        // Profile Velocity: 0 = maximum speed (instant response)
+        // Profile Acceleration: 0 = maximum acceleration (no smoothing)
+        dxl.setProfileVelocity(DXL_ID, 0);
+        dxl.setProfileAcceleration(DXL_ID, 0);
 
         dxl.torqueOn(DXL_ID);                         // Turn on torque (motor locked to position)
 
@@ -112,9 +133,7 @@ void setup() {
         // Check: wiring, power, baud rate, motor ID
     }
 
-    // Record start time for motion timing
-    start_time = millis();  // millis() = milliseconds since M5Stack powered on
-    delay(1000);            // Wait 1 second before starting loop
+    delay(1000);  // Wait 1 second before starting loop
 }
 
 // ============================================================================
@@ -124,87 +143,50 @@ void loop() {
     M5.update();  // Update M5Stack internal state (buttons, etc.)
 
     // ========================================================================
-    // CHECK IF MOTION IS COMPLETE
+    // READ ENCODER VALUES
     // ========================================================================
-    if (cycle_complete) {
-        // Motion finished - just display message and wait
-        M5.Display.setCursor(10, 100);
-        M5.Display.println("Cycle COMPLETE!     ");
-        M5.Display.setCursor(10, 120);
-        M5.Display.println("Upload again to repeat");
-        delay(100);
-        return;  // Exit loop() early, don't send more commands
-    }
+    // Read switch status (returns true/false for switch state)
+    bool switch_status = encoder.getSwitchStatus();
+
+    // Read Channel 1 encoder value (incremental counter)
+    int32_t encoder_value = encoder.getEncoderValue(0);  // Channel 0 = Channel 1
 
     // ========================================================================
-    // CALCULATE MOTION TIMING
+    // MAP ENCODER TO MOTOR POSITION (EXTENDED MODE - MULTI-TURN)
     // ========================================================================
-    // How many milliseconds have passed since we started?
-    unsigned long elapsed = millis() - start_time;
+    // Scale encoder value to motor position
+    // Encoder: 60 counts per rotation
+    // Motor: 4095 positions per rotation (0-360°)
+    // Extended mode: Motor can go beyond 0-4095 (unlimited rotations)
+    // Scale factor: 4095 / 60 = 68.25
 
-    // Has 5 seconds passed? If yes, stop the motion
-    if (elapsed >= CYCLE_TIME) {
-        cycle_complete = true;
-        dxl.setGoalPosition(DXL_ID, 0);  // Return to position 0 (0 degrees)
-        return;
-    }
+    int position = (-encoder_value * MAX_POSITION) / ENCODER_COUNTS_PER_REV;
+    // -encoder is counter-clockwise, +encoder is clockwise.
 
-    // ========================================================================
-    // CALCULATE SMOOTH POSITION WITH ACCELERATION
-    // ========================================================================
-    int position;
+    // NO WRAPPING - let position go beyond 0-4095 for continuous rotation
+    // Extended position mode handles multi-turn automatically
 
-    // Calculate progress through cycle: 0.0 (start) → 1.0 (end)
-    float progress = (float)elapsed / CYCLE_TIME;
-
-    // Apply smooth acceleration curve (sine wave for S-curve motion)
-    // This makes motor start slow, speed up in middle, slow down at end
-    // Without this, motor would move at constant speed (jerky)
-    float ease = (sin((progress - 0.5) * PI) + 1.0) / 2.0;
-
-    // Map the eased progress to motor position
-    // Cycle motion: 0 → 4095 → 0 (full rotation and back)
-    if (elapsed < CYCLE_TIME / 2) {
-        // First 2.5 seconds: move from 0 to 4095 (0° to 360°)
-        position = (int)(ease * MAX_POSITION * 2);
-        if (position > MAX_POSITION) position = MAX_POSITION;  // Safety limit
-    } else {
-        // Last 2.5 seconds: move from 4095 back to 0 (360° to 0°)
-        position = (int)((1.0 - ease) * MAX_POSITION * 2);
-        if (position > MAX_POSITION) position = MAX_POSITION;  // Safety limit
-    }
-
-    // ========================================================================
-    // SEND COMMAND TO MOTOR VIA RS485
-    // ========================================================================
-    // This function does the following automatically:
-    // 1. Formats a Dynamixel Protocol 2.0 packet with position data
-    // 2. Calculates CRC checksum for data integrity
-    // 3. Sets EN pin HIGH (enable transmit on RS485 transceiver)
-    // 4. Sends packet bytes via Serial1 → DMX Base → Motor
-    // 5. Sets EN pin LOW (enable receive on RS485 transceiver)
+    // Send position to motor (ALWAYS - removed switch check)
+    if(!switch_status){
     dxl.setGoalPosition(DXL_ID, position);
-
+    }
     // ========================================================================
-    // READ CURRENT POSITION FROM MOTOR VIA RS485
+    // READ CURRENT MOTOR POSITION
     // ========================================================================
-    // This function does the following automatically:
-    // 1. Sends a "read position" request packet to motor
-    // 2. Waits for motor to respond via RS485
-    // 3. Receives response packet
-    // 4. Validates CRC checksum
-    // 5. Extracts position value from packet
     int32_t present_position = dxl.getPresentPosition(DXL_ID);
-
     // ========================================================================
-    // DISPLAY DEBUG INFO ON SCREEN
+    // DISPLAY DEBUG INFO
     // ========================================================================
     M5.Display.setCursor(10, 100);
-    M5.Display.printf("Time: %lu ms  ", elapsed);      // Time elapsed in cycle
+    M5.Display.printf("Switch: %s    ", switch_status ? "ON" : "OFF");
     M5.Display.setCursor(10, 120);
-    M5.Display.printf("Goal: %d      ", position);     // Target position we sent
+    M5.Display.printf("Enc CH1: %ld    ", encoder_value);
     M5.Display.setCursor(10, 140);
-    M5.Display.printf("Curr: %d      ", present_position);  // Actual motor position
+    M5.Display.printf("Enc->Pos: %d    ", position);
+    M5.Display.setCursor(10, 160);
+    M5.Display.printf("Motor: %d    ", present_position);
+    // M5.Display.setCursor(10, 180);
+    // M5.Display.printf("Error: %d    ", position - present_position);
 
-    delay(1000/120.);  // Wait 50ms before next loop (sends commands ~20 times/second)
+    delay(1000/60.);  // Update 20 times per second
 }
