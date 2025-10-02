@@ -188,5 +188,5 @@ void loop() {
     // M5.Display.setCursor(10, 180);
     // M5.Display.printf("Error: %d    ", position - present_position);
 
-    delay(1000/60.);  // Update 20 times per second
+    delay(1000/120.);  // Update 20 times per second
 }
