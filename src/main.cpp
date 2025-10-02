@@ -87,10 +87,22 @@ void setup() {
         // Configure motor for position control mode
         dxl.torqueOff(DXL_ID);                        // Turn off torque (motor can move freely)
         dxl.setOperatingMode(DXL_ID, OP_POSITION);    // Set to position control mode
-           
-        dxl.setProfileVelocity(DXL_ID, 100);// (motor moves to specific positions)
+
+        // Set motion profile (controls how motor moves between positions)
+        // Profile Velocity: Movement speed in rev/min
+        //   - 0 = use maximum speed from firmware
+        //   - 100 = slow, smooth movement (good for testing)
+        //   - Range: 0-1023 for XL430
+        dxl.setProfileVelocity(DXL_ID, 100);
+
+        // Profile Acceleration: Acceleration/deceleration rate in rev/min²
+        //   - 0 = use maximum acceleration (instant start/stop, jerky)
+        //   - 100 = gentle acceleration (smooth start/stop)
+        //   - Range: 0-32767 for XL430
         dxl.setProfileAcceleration(DXL_ID, 100);
+
         dxl.torqueOn(DXL_ID);                         // Turn on torque (motor locked to position)
+
 
         M5.Display.setCursor(10, 70);
         M5.Display.println("Torque ON");
@@ -194,5 +206,5 @@ void loop() {
     M5.Display.setCursor(10, 140);
     M5.Display.printf("Curr: %d      ", present_position);  // Actual motor position
 
-    delay(1000/240.);  // Wait 50ms before next loop (sends commands ~20 times/second)
+    delay(1000/120.);  // Wait 50ms before next loop (sends commands ~20 times/second)
 }
