@@ -59,6 +59,7 @@ int direction_multiplier = -1;      // Direction: 1 = FWD, -1 = REV
 unsigned long cycle_start_time = 0;     // When current cycle started
 bool auto_mode_active = false;          // Track if we're in auto mode
 int saved_cycle_time = 2000;            // Remember cycle time when switching modes
+bool use_encoder_control = false;       // Flag: use encoder values or keep defaults
 
 // Auto mode parameters (controllable via encoders)
 int auto_cycle_time = 2000;             // Total cycle time (ms) - CH1
@@ -81,7 +82,7 @@ void setup() {
     // M5Stack CoreS3 Port.A: SDA=GPIO2, SCL=GPIO1
 
     // Wait for power to stabilize
-    delay(2000);  // Longer initial delay
+    //delay(2000);  // Longer initial delay
 
     // ========================================================================
     // AGGRESSIVE I2C BUS CLEANUP ON STARTUP
@@ -89,26 +90,26 @@ void setup() {
     // Send multiple reset attempts to clear any stuck state on I2C devices
     for (int i = 0; i < 3; i++) {
         Wire.begin(2, 1);
-        delay(100);
+        // delay(100);
 
         // Send general call reset to all I2C devices
         Wire.beginTransmission(0x00);
         Wire.write(0x06);  // General call reset
         Wire.endTransmission();
-        delay(200);
+        // delay(200);
 
         // Send stop conditions to clear bus
         Wire.beginTransmission(ENCODER_I2C_ADDR);
         Wire.endTransmission();
-        delay(200);
+        // delay(200);
 
         Wire.end();
-        delay(500);
+        // delay(500);
     }
 
     // Final I2C initialization
     Wire.begin(2, 1);
-    delay(1000);
+    // delay(100);
 
     // Initialize M5Stack hardware AFTER I2C cleanup
     auto cfg = M5.config();
@@ -121,30 +122,30 @@ void setup() {
     M5.Display.println("Motor + Encoder Control");
     M5.Display.setCursor(10, 20);
     M5.Display.println("Cleaning I2C bus...");
-    delay(1000);
+    delay(100);
 
     // Try to initialize encoder with retries
     encoder_found = false;
-    for (int retry = 0; retry < 50; retry++) {
-        // Every 5th retry, do a full I2C reset with longer delays
+    for (int retry = 0; retry < 25; retry++) {  // Reduced from 50 to 25
+        // Every 5th retry, do a full I2C reset
         if (retry > 0 && retry % 5 == 0) {
             M5.Display.setCursor(10, 20);
             M5.Display.printf("Retry %d - Deep reset...    ", retry);
             M5.Display.setCursor(10, 40);
-            M5.Display.println("Please try unplug the encoder...    ");
+            M5.Display.println("Try unplug encoder if stuck");
             // Complete I2C bus reset
             Wire.end();
-            delay(1000);  // Longer delay to let bus settle
+            delay(300);  // Reduced from 1000ms
 
             // Reinitialize I2C
             Wire.begin(2, 1);
-            delay(1000);
+            delay(300);  // Reduced from 1000ms
 
             // Try sending general call reset to I2C bus (address 0x00)
             Wire.beginTransmission(0x00);
             Wire.write(0x06);  // General call reset command
             Wire.endTransmission();
-            delay(500);
+            delay(200);  // Reduced from 500ms
         }
 
         // Try to initialize encoder
@@ -161,17 +162,23 @@ void setup() {
             break;  // Success - exit retry loop
         }
 
-        delay(400);  // Wait between attempts
+        delay(200);  // Reduced from 400ms
     }
 
     if (!encoder_found) {
-        M5.Display.setCursor(10, 20);
+        M5.Display.clear();
+        M5.Display.setCursor(10, 10);
+        M5.Display.println("=== WARNING ===");
+        M5.Display.setCursor(10, 30);
         M5.Display.println("Encoder NOT found!");
-        M5.Display.setCursor(10, 40);
-        M5.Display.println("1. Check wiring");
-        M5.Display.setCursor(10, 60);
-        M5.Display.println("2. Press RESET button");
-        while(1) { delay(100); }  // Stop here if no encoder after retries
+        M5.Display.setCursor(10, 50);
+        M5.Display.println("Entering SAFE MODE...");
+        M5.Display.setCursor(10, 70);
+        M5.Display.println("Motor: Auto +/-90deg");
+        M5.Display.setCursor(10, 90);
+        M5.Display.println("No manual control");
+        delay(3000);
+        // Continue without encoder - will use default auto mode
     }
 
     // ========================================================================
@@ -232,7 +239,67 @@ void loop() {
     M5.update();  // Update M5Stack internal state (buttons, etc.)
 
     // ========================================================================
-    // READ ENCODER VALUES
+    // SAFE MODE - Run default auto mode if encoder not found
+    // ========================================================================
+    if (!encoder_found) {
+        // Force auto mode on with default settings (±90° = 1024 units)
+        if (!auto_mode_active) {
+            auto_mode_active = true;
+            cycle_start_time = millis();
+            auto_stroke_range = 1024;  // ±90 degrees
+        }
+
+        // Calculate cycle timing
+        unsigned long current_time = millis();
+        unsigned long elapsed_time = current_time - cycle_start_time;
+        unsigned long time_in_cycle = elapsed_time % auto_cycle_time;
+
+        int push_time = (auto_cycle_time * auto_push_ratio) / 100;
+
+        int target_position;
+        int target_velocity;
+        int target_acceleration;
+
+        if (time_in_cycle < push_time) {
+            // PUSH STROKE
+            target_position = -auto_stroke_range * auto_direction_swap;
+            target_velocity = auto_push_velocity;
+            target_acceleration = auto_push_acceleration;
+        } else {
+            // RETURN STROKE
+            target_position = auto_stroke_range * auto_direction_swap;
+            target_velocity = auto_return_velocity;
+            target_acceleration = auto_return_acceleration;
+        }
+
+        // Update motor profile
+        if (target_velocity != current_velocity) {
+            dxl.setProfileVelocity(DXL_ID, target_velocity);
+            current_velocity = target_velocity;
+        }
+        if (target_acceleration != current_acceleration) {
+            dxl.setProfileAcceleration(DXL_ID, target_acceleration);
+            current_acceleration = target_acceleration;
+        }
+
+        // Send target position
+        dxl.setGoalPosition(DXL_ID, target_position);
+
+        // Display safe mode info
+        int32_t present_position = dxl.getPresentPosition(DXL_ID);
+        M5.Display.setCursor(10, 100);
+        M5.Display.println("=== SAFE MODE ===");
+        M5.Display.setCursor(10, 120);
+        M5.Display.printf("Auto: +-%ddeg        ", (auto_stroke_range * 360) / 4096);
+        M5.Display.setCursor(10, 140);
+        M5.Display.printf("Motor: %d          ", present_position);
+
+        delay(1000/120.);
+        return;  // Skip normal encoder-based control
+    }
+
+    // ========================================================================
+    // READ ENCODER VALUES (only if encoder found)
     // ========================================================================
     // Read switch status (returns true/false for switch state)
     bool switch_status = encoder.getSwitchStatus();
@@ -241,7 +308,7 @@ void loop() {
     int32_t encoder_ch1_value = encoder.getEncoderValue(0);
     int32_t encoder_ch2_value = max(0, encoder.getEncoderValue(1));
     int32_t encoder_ch3_value = max(0, encoder.getEncoderValue(2));
-    int32_t encoder_ch4_value = max(0, encoder.getEncoderValue(3));     
+    int32_t encoder_ch4_value = max(0, encoder.getEncoderValue(3));
     int32_t encoder_ch5_value = max(0, encoder.getEncoderValue(4));
     int32_t encoder_ch6_value = max(0, encoder.getEncoderValue(5));
     int32_t encoder_ch7_value = max(0, encoder.getEncoderValue(6));
@@ -366,41 +433,55 @@ void loop() {
         // ----------------------------------------------------------------
         // ENCODER CONTROLS FOR AUTO MODE
         // ----------------------------------------------------------------
+        // Enable encoder control if any encoder has been touched
+        if (!use_encoder_control) {
+            // Check if any encoder has moved from zero
+            if (abs(encoder_ch1_value) > 0 || abs(encoder_ch2_value) > 0 ||
+                abs(encoder_ch3_value) > 0 || abs(encoder_ch4_value) > 0 ||
+                abs(encoder_ch5_value) > 0 || abs(encoder_ch6_value) > 0 ||
+                abs(encoder_ch7_value) > 0) {
+                use_encoder_control = true;  // User has touched an encoder, start using encoder values
+            }
+        }
 
-        // CH1: CYCLE TIME (2000-5000ms)
-        auto_cycle_time = 2000 + (abs(encoder_ch1_value) * 50);
-        if (auto_cycle_time > 5000) auto_cycle_time = 5000;
-        // Button: Reset to default
+        // Only update from encoders if they've been touched, otherwise use defaults
+        if (use_encoder_control) {
+            // CH1: CYCLE TIME (2000-5000ms)
+            auto_cycle_time = 2000 + (abs(encoder_ch1_value) * 50);
+            if (auto_cycle_time > 5000) auto_cycle_time = 5000;
+
+            // CH2: PUSH VELOCITY (500-2000)
+            auto_push_velocity = 500 + (abs(encoder_ch2_value) * 2.5);
+            if (auto_push_velocity > 2000) auto_push_velocity = 2000;
+
+            // CH3: PUSH ACCELERATION (100-5000)
+            auto_push_acceleration = 100 + (abs(encoder_ch3_value) * 2.5);
+            if (auto_push_acceleration > 5000) auto_push_acceleration = 5000;
+
+            // CH4: RETURN VELOCITY (50-500)
+            auto_return_velocity = 50 + (abs(encoder_ch4_value) * 2.5);
+            if (auto_return_velocity > 500) auto_return_velocity = 500;
+
+            // CH5: RETURN ACCELERATION (10-1000)
+            auto_return_acceleration = 10 + (abs(encoder_ch5_value) * 2.5);
+            if (auto_return_acceleration > 1000) auto_return_acceleration = 1000;
+
+            // CH6: PUSH/RETURN RATIO (45-90%)
+            auto_push_ratio = 45 + (abs(encoder_ch6_value) * 2);
+            if (auto_push_ratio > 90) auto_push_ratio = 90;
+            if (auto_push_ratio < 45) auto_push_ratio = 45;
+
+            // CH7: STROKE RANGE (512-4096 units, 45-360°)
+            auto_stroke_range = 512 + abs(encoder_ch7_value) * 10;
+            if (auto_stroke_range > 4096) auto_stroke_range = 4096;
+        }
+
+        // Button: Reset to default (always check)
         static bool last_ch1_button = false;
         if (encoder_ch1_button && !last_ch1_button) {
             encoder.resetCounter(0);  // Reset encoder to 0
         }
         last_ch1_button = encoder_ch1_button;
-
-        // CH2: PUSH VELOCITY (500-2000)
-        auto_push_velocity = 500 + (abs(encoder_ch2_value) * 2.5);
-        if (auto_push_velocity > 2000) auto_push_velocity = 2000;
-
-        // CH3: PUSH ACCELERATION (100-5000)
-        auto_push_acceleration = 100 + (abs(encoder_ch3_value) * 2.5);
-        if (auto_push_acceleration > 5000) auto_push_acceleration = 5000;
-
-        // CH4: RETURN VELOCITY (50-500)
-        auto_return_velocity = 50 + (abs(encoder_ch4_value) * 2.5);
-        if (auto_return_velocity > 500) auto_return_velocity = 500;  // Fixed bug
-
-        // CH5: RETURN ACCELERATION (10-1000)
-        auto_return_acceleration = 10 + (abs(encoder_ch5_value) * 2.5);
-        if (auto_return_acceleration > 1000) auto_return_acceleration = 1000;
-
-        // CH6: PUSH/RETURN RATIO (10-90%)
-        auto_push_ratio = 45 + (abs(encoder_ch6_value) * 2);
-        if (auto_push_ratio > 90) auto_push_ratio = 90;
-        if (auto_push_ratio < 45) auto_push_ratio = 45;
-
-        // CH7: STROKE RANGE (0-4096 units, 0-360°)
-        auto_stroke_range = 30 + abs(encoder_ch7_value) * 10;
-        if (auto_stroke_range > 4096) auto_stroke_range = 4096;
 
         // CH8: DIRECTION SWAP (button only)
         static bool last_ch8_button = false;
