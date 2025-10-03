@@ -289,74 +289,34 @@ void loop() {
         last_ch1_button = encoder_ch1_button;
 
         // CH2: PUSH VELOCITY (500-2000)
-        auto_push_velocity = 500 + (abs(encoder_ch2_value) * 15);
+        auto_push_velocity = 500 + (abs(encoder_ch2_value) * 20);
         if (auto_push_velocity > 2000) auto_push_velocity = 2000;
-        // Button: Set to maximum
-        static bool last_ch2_button = false;
-        if (encoder_ch2_button && !last_ch2_button) {
-            auto_push_velocity = 2000;
-        }
-        last_ch2_button = encoder_ch2_button;
 
         // CH3: PUSH ACCELERATION (100-5000)
         auto_push_acceleration = 100 + (abs(encoder_ch3_value) * 50);
         if (auto_push_acceleration > 5000) auto_push_acceleration = 5000;
-        // Button: Set to maximum
-        static bool last_ch3_button = false;
-        if (encoder_ch3_button && !last_ch3_button) {
-            auto_push_acceleration = 5000;
-        }
-        last_ch3_button = encoder_ch3_button;
 
         // CH4: RETURN VELOCITY (50-500)
         auto_return_velocity = 50 + (abs(encoder_ch4_value) * 5);
-        if (auto_return_velocity > 500) auto_return_velocity = 500;
-        // Button: Set to minimum
-        static bool last_ch4_button_auto = false;
-        if (encoder_ch4_button && !last_ch4_button_auto) {
-            auto_return_velocity = 50;
-        }
-        last_ch4_button_auto = encoder_ch4_button;
+        if (auto_return_velocity > 500) auto_return_velocity = 500;  // Fixed bug
 
         // CH5: RETURN ACCELERATION (10-1000)
         auto_return_acceleration = 10 + (abs(encoder_ch5_value) * 10);
         if (auto_return_acceleration > 1000) auto_return_acceleration = 1000;
-        // Button: Set to minimum
-        static bool last_ch5_button = false;
-        if (encoder_ch5_button && !last_ch5_button) {
-            auto_return_acceleration = 10;
-        }
-        last_ch5_button = encoder_ch5_button;
 
         // CH6: PUSH/RETURN RATIO (10-90%)
         auto_push_ratio = 10 + (abs(encoder_ch6_value) * 2);
         if (auto_push_ratio > 90) auto_push_ratio = 90;
         if (auto_push_ratio < 10) auto_push_ratio = 10;
-        // Button: Reset to 50%
-        static bool last_ch6_button = false;
-        if (encoder_ch6_button && !last_ch6_button) {
-            encoder.resetCounter(5);  // Reset CH6 encoder
-        }
-        last_ch6_button = encoder_ch6_button;
 
-        // CH7: DIRECTION SWAP (button only)
-        static bool last_ch7_button = false;
-        if (encoder_ch7_button && !last_ch7_button) {
-            auto_direction_swap *= -1;  // Toggle between 1 and -1
-        }
-        last_ch7_button = encoder_ch7_button;
-
-        // CH8: STROKE RANGE (0-4096 units, 0-360°)
-        auto_stroke_range = abs(encoder_ch8_value) * 10;
+        // CH7: STROKE RANGE (0-4096 units, 0-360°)
+        auto_stroke_range = abs(encoder_ch7_value) * 10;
         if (auto_stroke_range > 4096) auto_stroke_range = 4096;
-        // Button: Cycle through presets
+
+        // CH8: DIRECTION SWAP (button only)
         static bool last_ch8_button = false;
-        static int range_preset = 1;  // 0=±45°, 1=±90°, 2=±180°
         if (encoder_ch8_button && !last_ch8_button) {
-            range_preset = (range_preset + 1) % 3;
-            if (range_preset == 0) auto_stroke_range = 512;   // ±45°
-            if (range_preset == 1) auto_stroke_range = 1024;  // ±90°
-            if (range_preset == 2) auto_stroke_range = 2048;  // ±180°
+            auto_direction_swap *= -1;  // Toggle between 1 and -1
         }
         last_ch8_button = encoder_ch8_button;
 
