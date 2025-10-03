@@ -61,10 +61,10 @@ bool auto_mode_active = false;          // Track if we're in auto mode
 
 // Auto mode parameters (controllable via encoders)
 int auto_cycle_time = 2000;             // Total cycle time (ms) - CH1
-int auto_push_velocity = 800;           // Fast push velocity - CH2
-int auto_push_acceleration = 200;       // Fast push acceleration - CH3
-int auto_return_velocity = 50;          // Slow return velocity - CH4
-int auto_return_acceleration = 10;      // Slow return acceleration - CH5
+int auto_push_velocity = 1200;          // Fast push velocity (500-2000) - CH2
+int auto_push_acceleration = 2000;      // Fast push acceleration (100-5000) - CH3
+int auto_return_velocity = 100;         // Slow return velocity (50-500) - CH4
+int auto_return_acceleration = 100;     // Slow return acceleration (10-1000) - CH5
 int auto_push_ratio = 50;               // Push time as % of cycle (10-90%) - CH6
 int auto_direction_swap = 1;            // Direction multiplier: 1=normal, -1=swapped - CH7
 int auto_stroke_range = 1024;           // Stroke range in units (±90°) - CH8
@@ -199,6 +199,16 @@ void loop() {
         if (auto_mode_active) {
             auto_mode_active = false;
             M5.Display.clear();  // Clear display when switching modes
+
+            // Home to position 0 when entering manual mode
+            dxl.setProfileVelocity(DXL_ID, 500);      // Medium speed to home
+            dxl.setProfileAcceleration(DXL_ID, 500);  // Medium acceleration
+            dxl.setGoalPosition(DXL_ID, 0);           // Move to position 0
+
+            delay(1000);  // Wait for motor to reach position 0
+
+            // Reset encoder CH1 to 0 so it matches motor position
+            encoder.resetCounter(0);
         }
 
         // ----------------------------------------------------------------
@@ -218,8 +228,9 @@ void loop() {
         // ----------------------------------------------------------------
         // ENCODER CH2: VELOCITY CONTROL
         // ----------------------------------------------------------------
-        int new_velocity = 50 + (abs(encoder_ch2_value) * 10);
-        if (new_velocity > 1000) new_velocity = 1000;
+        // Range: 0-2000 (covers full motor speed range ~0-458 RPM)
+        int new_velocity = abs(encoder_ch2_value) * 20;
+        if (new_velocity > 2000) new_velocity = 2000;
 
         if (new_velocity != current_velocity) {
             dxl.setProfileVelocity(DXL_ID, new_velocity);
@@ -229,8 +240,9 @@ void loop() {
         // ----------------------------------------------------------------
         // ENCODER CH3: ACCELERATION CONTROL
         // ----------------------------------------------------------------
-        int new_acceleration = 10 + (abs(encoder_ch3_value) * 5);
-        if (new_acceleration > 255) new_acceleration = 255;
+        // Range: 0-5000 (wide range for noticeable control)
+        int new_acceleration = abs(encoder_ch3_value) * 50;
+        if (new_acceleration > 5000) new_acceleration = 5000;
 
         if (new_acceleration != current_acceleration) {
             dxl.setProfileAcceleration(DXL_ID, new_acceleration);
@@ -250,8 +262,16 @@ void loop() {
         // Initialize auto mode on first entry
         if (!auto_mode_active) {
             auto_mode_active = true;
-            cycle_start_time = millis();
             M5.Display.clear();  // Clear display when switching modes
+
+            // Move to starting position (0) before beginning cycle
+            dxl.setProfileVelocity(DXL_ID, 500);      // Medium speed to home
+            dxl.setProfileAcceleration(DXL_ID, 500);  // Medium acceleration
+            dxl.setGoalPosition(DXL_ID, 0);           // Move to position 0
+
+            delay(1000);  // Wait for motor to reach position 0
+
+            cycle_start_time = millis();  // Start cycle timing after homing
         }
 
         // ----------------------------------------------------------------
@@ -268,43 +288,43 @@ void loop() {
         }
         last_ch1_button = encoder_ch1_button;
 
-        // CH2: PUSH VELOCITY (100-1000)
-        auto_push_velocity = 100 + (abs(encoder_ch2_value) * 10);
-        if (auto_push_velocity > 1000) auto_push_velocity = 1000;
+        // CH2: PUSH VELOCITY (500-2000)
+        auto_push_velocity = 500 + (abs(encoder_ch2_value) * 15);
+        if (auto_push_velocity > 2000) auto_push_velocity = 2000;
         // Button: Set to maximum
         static bool last_ch2_button = false;
         if (encoder_ch2_button && !last_ch2_button) {
-            auto_push_velocity = 1000;
+            auto_push_velocity = 2000;
         }
         last_ch2_button = encoder_ch2_button;
 
-        // CH3: PUSH ACCELERATION (50-255)
-        auto_push_acceleration = 50 + (abs(encoder_ch3_value) * 5);
-        if (auto_push_acceleration > 255) auto_push_acceleration = 255;
+        // CH3: PUSH ACCELERATION (100-5000)
+        auto_push_acceleration = 100 + (abs(encoder_ch3_value) * 50);
+        if (auto_push_acceleration > 5000) auto_push_acceleration = 5000;
         // Button: Set to maximum
         static bool last_ch3_button = false;
         if (encoder_ch3_button && !last_ch3_button) {
-            auto_push_acceleration = 255;
+            auto_push_acceleration = 5000;
         }
         last_ch3_button = encoder_ch3_button;
 
-        // CH4: RETURN VELOCITY (10-200)
-        auto_return_velocity = 10 + (abs(encoder_ch4_value) * 5);
-        if (auto_return_velocity > 200) auto_return_velocity = 200;
+        // CH4: RETURN VELOCITY (50-500)
+        auto_return_velocity = 50 + (abs(encoder_ch4_value) * 5);
+        if (auto_return_velocity > 500) auto_return_velocity = 500;
         // Button: Set to minimum
         static bool last_ch4_button_auto = false;
         if (encoder_ch4_button && !last_ch4_button_auto) {
-            auto_return_velocity = 10;
+            auto_return_velocity = 50;
         }
         last_ch4_button_auto = encoder_ch4_button;
 
-        // CH5: RETURN ACCELERATION (5-100)
-        auto_return_acceleration = 5 + (abs(encoder_ch5_value) * 2);
-        if (auto_return_acceleration > 100) auto_return_acceleration = 100;
+        // CH5: RETURN ACCELERATION (10-1000)
+        auto_return_acceleration = 10 + (abs(encoder_ch5_value) * 10);
+        if (auto_return_acceleration > 1000) auto_return_acceleration = 1000;
         // Button: Set to minimum
         static bool last_ch5_button = false;
         if (encoder_ch5_button && !last_ch5_button) {
-            auto_return_acceleration = 5;
+            auto_return_acceleration = 10;
         }
         last_ch5_button = encoder_ch5_button;
 
@@ -428,22 +448,40 @@ void loop() {
         M5.Display.setCursor(10, 100);
         M5.Display.println("=== AUTO MODE ===");
 
+        // ----------------------------------------------------------------
+        // MOTION GRAPH - Visual representation of the cycle
+        // ----------------------------------------------------------------
         M5.Display.setCursor(10, 120);
-        if (time_in_cycle < push_time) {
-            M5.Display.printf("Stroke: PUSH  Dir:%s    ",
-                              auto_direction_swap == 1 ? "NORM" : "SWAP");
-        } else {
-            M5.Display.printf("Stroke: RETURN  Dir:%s  ",
-                              auto_direction_swap == 1 ? "NORM" : "SWAP");
+        M5.Display.print("Graph: ");
+
+        // Draw simple motion curve (30 chars wide)
+        int graph_width = 30;
+        int push_width = (graph_width * auto_push_ratio) / 100;
+        int return_width = graph_width - push_width;
+        int current_pos = (time_in_cycle * graph_width) / auto_cycle_time;
+
+        for (int i = 0; i < graph_width; i++) {
+            if (i == current_pos) {
+                M5.Display.print("O");  // Current position marker
+            } else if (i < push_width) {
+                M5.Display.print("\\");  // Push stroke (down)
+            } else {
+                M5.Display.print("/");   // Return stroke (up)
+            }
         }
 
         M5.Display.setCursor(10, 140);
-        M5.Display.printf("Cycle:%dms Ratio:%d/%d%%   ",
-                          auto_cycle_time, auto_push_ratio, 100-auto_push_ratio);
+        if (time_in_cycle < push_time) {
+            M5.Display.printf("PUSH  Dir:%s  Prog:%d%%    ",
+                              auto_direction_swap == 1 ? "NORM" : "SWAP", cycle_progress);
+        } else {
+            M5.Display.printf("RETURN Dir:%s Prog:%d%%   ",
+                              auto_direction_swap == 1 ? "NORM" : "SWAP", cycle_progress);
+        }
 
         M5.Display.setCursor(10, 160);
-        M5.Display.printf("Range:+-%d deg (%d)    ",
-                          stroke_angle, auto_stroke_range);
+        M5.Display.printf("Cycle:%dms R:%d/%d%% +-%ddeg",
+                          auto_cycle_time, auto_push_ratio, 100-auto_push_ratio, stroke_angle);
 
         M5.Display.setCursor(10, 180);
         M5.Display.printf("Push: V=%d A=%d      ",
@@ -453,19 +491,8 @@ void loop() {
         M5.Display.printf("Rtn:  V=%d A=%d      ",
                           auto_return_velocity, auto_return_acceleration);
 
-        // Progress bar
         M5.Display.setCursor(10, 220);
-        M5.Display.print("[");
-        int bar_width = 25;
-        int filled = (cycle_progress * bar_width) / 100;
-        for (int i = 0; i < bar_width; i++) {
-            if (i < filled) {
-                M5.Display.print("=");
-            } else {
-                M5.Display.print(" ");
-            }
-        }
-        M5.Display.printf("] %d%%  ", cycle_progress);
+        M5.Display.printf("Motor: %d   ", present_position);
     }
 
     delay(1000/120.);  // Update 120 times per second
