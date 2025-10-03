@@ -53,11 +53,12 @@ const int ENCODER_COUNTS_PER_REV = 60;  // Encoder counts per full rotation
 // Manual mode control variables
 int current_velocity = 0;          // Track current velocity setting
 int current_acceleration = 0;      // Track current acceleration setting
-int direction_multiplier = 1;      // Direction: 1 = FWD, -1 = REV
+int direction_multiplier = -1;      // Direction: 1 = FWD, -1 = REV
 
 // Auto mode control variables
 unsigned long cycle_start_time = 0;     // When current cycle started
 bool auto_mode_active = false;          // Track if we're in auto mode
+int saved_cycle_time = 2000;            // Remember cycle time when switching modes
 
 // Auto mode parameters (controllable via encoders)
 int auto_cycle_time = 2000;             // Total cycle time (ms) - CH1
@@ -79,7 +80,7 @@ void setup() {
 
     // Setup display
     M5.Display.clear();
-    M5.Display.setTextSize(1);
+    M5.Display.setTextSize(1.5);
     M5.Display.setCursor(10, 10);
     M5.Display.println("Motor + Encoder Control");
 
@@ -89,20 +90,27 @@ void setup() {
     // M5Stack CoreS3 Port.A: SDA=GPIO2, SCL=GPIO1
     Wire.begin(2, 1);  // Initialize I2C with SDA=GPIO2, SCL=GPIO1
 
-    // Initialize 8-Encoder Unit
-    if (encoder.begin(&Wire, ENCODER_I2C_ADDR, 2, 1)) {
-        M5.Display.setCursor(10, 20);
-        M5.Display.println("Encoder found!");
+    // Initialize 8-Encoder Unit with retry logic
+    // Sometimes the encoder needs a moment to initialize after power-on
+    encoder_found = false;
+    for (int retry = 0; retry < 5; retry++) {
+        delay(100);  // Wait a bit before each attempt
+        if (encoder.begin(&Wire, ENCODER_I2C_ADDR, 2, 1)) {
+            M5.Display.setCursor(10, 20);
+            M5.Display.printf("Encoder found! (try %d)", retry + 1);
 
-        // Reset Channel 1 encoder to 0 at startup
-        encoder.resetCounter(0);  // Reset channel 0 (= Channel 1)
+            // Don't reset encoder - keep current value to maintain position
+            // This allows the motor to start from its current position
 
-        encoder_found = true;
-    } else {
+            encoder_found = true;
+            break;  // Success - exit retry loop
+        }
+    }
+
+    if (!encoder_found) {
         M5.Display.setCursor(10, 20);
         M5.Display.println("Encoder NOT found - HALT");
-        encoder_found = false;
-        while(1) { delay(100); }  // Stop here if no encoder
+        while(1) { delay(100); }  // Stop here if no encoder after retries
     }
 
     // ========================================================================
@@ -170,13 +178,13 @@ void loop() {
 
     // Read all encoder values and buttons
     int32_t encoder_ch1_value = encoder.getEncoderValue(0);
-    int32_t encoder_ch2_value = encoder.getEncoderValue(1);
-    int32_t encoder_ch3_value = encoder.getEncoderValue(2);
-    int32_t encoder_ch4_value = encoder.getEncoderValue(3);
-    int32_t encoder_ch5_value = encoder.getEncoderValue(4);
-    int32_t encoder_ch6_value = encoder.getEncoderValue(5);
-    int32_t encoder_ch7_value = encoder.getEncoderValue(6);
-    int32_t encoder_ch8_value = encoder.getEncoderValue(7);
+    int32_t encoder_ch2_value = max(0, encoder.getEncoderValue(1));
+    int32_t encoder_ch3_value = max(0, encoder.getEncoderValue(2));
+    int32_t encoder_ch4_value = max(0, encoder.getEncoderValue(3));     
+    int32_t encoder_ch5_value = max(0, encoder.getEncoderValue(4));
+    int32_t encoder_ch6_value = max(0, encoder.getEncoderValue(5));
+    int32_t encoder_ch7_value = max(0, encoder.getEncoderValue(6));
+    int32_t encoder_ch8_value = max(0, encoder.getEncoderValue(7));
 
     bool encoder_ch1_button = encoder.getButtonStatus(0);
     bool encoder_ch2_button = encoder.getButtonStatus(1);
@@ -200,23 +208,39 @@ void loop() {
             auto_mode_active = false;
             M5.Display.clear();  // Clear display when switching modes
 
-            // Home to position 0 when entering manual mode
-            dxl.setProfileVelocity(DXL_ID, 500);      // Medium speed to home
-            dxl.setProfileAcceleration(DXL_ID, 500);  // Medium acceleration
-            dxl.setGoalPosition(DXL_ID, 0);           // Move to position 0
+            // Save current cycle time to restore it later
+            saved_cycle_time = auto_cycle_time;
 
-            delay(1000);  // Wait for motor to reach position 0
-
-            // Reset encoder CH1 to 0 so it matches motor position
-            encoder.resetCounter(0);
+            // Get current motor position and set encoder to match it (no homing)
+            int32_t current_motor_position = dxl.getPresentPosition(DXL_ID);
+            // Calculate encoder value that corresponds to current motor position
+            int32_t new_encoder_value = -(current_motor_position * ENCODER_COUNTS_PER_REV) / (MAX_POSITION * direction_multiplier);
+            encoder.setEncoderValue(0, new_encoder_value);
         }
 
         // ----------------------------------------------------------------
         // ENCODER CH4: DIRECTION TOGGLE (BUTTON)
         // ----------------------------------------------------------------
         static bool last_ch4_button = false;
+        static bool direction_just_changed = false;
         if (encoder_ch4_button && !last_ch4_button) {  // Button press detected
-            direction_multiplier *= -1;  // Toggle between 1 and -1
+            // Read current motor position before changing direction
+            int32_t current_motor_position = dxl.getPresentPosition(DXL_ID);
+
+            // Toggle direction
+            direction_multiplier *= -1;
+
+            // Calculate what encoder value would maintain current motor position with new direction
+            // position = (-encoder_ch1_value * MAX_POSITION * direction_multiplier) / ENCODER_COUNTS_PER_REV
+            // Solve for encoder_ch1_value: encoder_ch1_value = -(position * ENCODER_COUNTS_PER_REV) / (MAX_POSITION * direction_multiplier)
+            int32_t new_encoder_value = -(current_motor_position * ENCODER_COUNTS_PER_REV) / (MAX_POSITION * direction_multiplier);
+
+            // Set encoder to this new value to maintain motor position
+            encoder.setEncoderValue(0, new_encoder_value);
+
+            // Send current position immediately to prevent movement
+            dxl.setGoalPosition(DXL_ID, current_motor_position);
+            direction_just_changed = true;
         }
         last_ch4_button = encoder_ch4_button;
 
@@ -229,7 +253,8 @@ void loop() {
         // ENCODER CH2: VELOCITY CONTROL
         // ----------------------------------------------------------------
         // Range: 0-2000 (covers full motor speed range ~0-458 RPM)
-        int new_velocity = abs(encoder_ch2_value) * 20;
+        // Use max(0, value) so negative values = 0 (stay at minimum)
+        int new_velocity = max(0, encoder_ch2_value) * 2.5;
         if (new_velocity > 2000) new_velocity = 2000;
 
         if (new_velocity != current_velocity) {
@@ -241,7 +266,8 @@ void loop() {
         // ENCODER CH3: ACCELERATION CONTROL
         // ----------------------------------------------------------------
         // Range: 0-5000 (wide range for noticeable control)
-        int new_acceleration = abs(encoder_ch3_value) * 50;
+        // Use max(0, value) so negative values = 0 (stay at minimum)
+        int new_acceleration = max(0, encoder_ch3_value) * 2.5;
         if (new_acceleration > 5000) new_acceleration = 5000;
 
         if (new_acceleration != current_acceleration) {
@@ -252,7 +278,12 @@ void loop() {
         // ----------------------------------------------------------------
         // SEND POSITION COMMAND
         // ----------------------------------------------------------------
-        dxl.setGoalPosition(DXL_ID, position);
+        // Skip sending position if direction just changed (already sent in direction toggle logic)
+        if (!direction_just_changed) {
+            dxl.setGoalPosition(DXL_ID, position);
+        } else {
+            direction_just_changed = false;  // Reset flag for next loop
+        }
 
     } else {
         // ====================================================================
@@ -264,22 +295,19 @@ void loop() {
             auto_mode_active = true;
             M5.Display.clear();  // Clear display when switching modes
 
-            // Move to starting position (0) before beginning cycle
-            dxl.setProfileVelocity(DXL_ID, 500);      // Medium speed to home
-            dxl.setProfileAcceleration(DXL_ID, 500);  // Medium acceleration
-            dxl.setGoalPosition(DXL_ID, 0);           // Move to position 0
+            // Restore saved cycle time from when we left auto mode
+            auto_cycle_time = saved_cycle_time;
 
-            delay(1000);  // Wait for motor to reach position 0
-
-            cycle_start_time = millis();  // Start cycle timing after homing
+            // Start cycle timing from current position (no homing)
+            cycle_start_time = millis();
         }
 
         // ----------------------------------------------------------------
         // ENCODER CONTROLS FOR AUTO MODE
         // ----------------------------------------------------------------
 
-        // CH1: CYCLE TIME (500-5000ms)
-        auto_cycle_time = 500 + (abs(encoder_ch1_value) * 50);
+        // CH1: CYCLE TIME (2000-5000ms)
+        auto_cycle_time = 2000 + (abs(encoder_ch1_value) * 50);
         if (auto_cycle_time > 5000) auto_cycle_time = 5000;
         // Button: Reset to default
         static bool last_ch1_button = false;
@@ -289,19 +317,19 @@ void loop() {
         last_ch1_button = encoder_ch1_button;
 
         // CH2: PUSH VELOCITY (500-2000)
-        auto_push_velocity = 500 + (abs(encoder_ch2_value) * 20);
+        auto_push_velocity = 500 + (abs(encoder_ch2_value) * 2.5);
         if (auto_push_velocity > 2000) auto_push_velocity = 2000;
 
         // CH3: PUSH ACCELERATION (100-5000)
-        auto_push_acceleration = 100 + (abs(encoder_ch3_value) * 50);
+        auto_push_acceleration = 100 + (abs(encoder_ch3_value) * 2.5);
         if (auto_push_acceleration > 5000) auto_push_acceleration = 5000;
 
         // CH4: RETURN VELOCITY (50-500)
-        auto_return_velocity = 50 + (abs(encoder_ch4_value) * 5);
+        auto_return_velocity = 50 + (abs(encoder_ch4_value) * 2.5);
         if (auto_return_velocity > 500) auto_return_velocity = 500;  // Fixed bug
 
         // CH5: RETURN ACCELERATION (10-1000)
-        auto_return_acceleration = 10 + (abs(encoder_ch5_value) * 10);
+        auto_return_acceleration = 10 + (abs(encoder_ch5_value) * 2.5);
         if (auto_return_acceleration > 1000) auto_return_acceleration = 1000;
 
         // CH6: PUSH/RETURN RATIO (10-90%)
@@ -316,7 +344,14 @@ void loop() {
         // CH8: DIRECTION SWAP (button only)
         static bool last_ch8_button = false;
         if (encoder_ch8_button && !last_ch8_button) {
-            auto_direction_swap *= -1;  // Toggle between 1 and -1
+            // Get current motor position before swapping
+            int32_t current_motor_position = dxl.getPresentPosition(DXL_ID);
+
+            // Toggle direction
+            auto_direction_swap *= -1;
+
+            // Send current position to motor to prevent movement
+            dxl.setGoalPosition(DXL_ID, current_motor_position);
         }
         last_ch8_button = encoder_ch8_button;
 
@@ -415,7 +450,7 @@ void loop() {
         M5.Display.print("Graph: ");
 
         // Draw simple motion curve (30 chars wide)
-        int graph_width = 30;
+        int graph_width = 25;
         int push_width = (graph_width * auto_push_ratio) / 100;
         int return_width = graph_width - push_width;
         int current_pos = (time_in_cycle * graph_width) / auto_cycle_time;
@@ -444,12 +479,14 @@ void loop() {
                           auto_cycle_time, auto_push_ratio, 100-auto_push_ratio, stroke_angle);
 
         M5.Display.setCursor(10, 180);
-        M5.Display.printf("Push: V=%d A=%d      ",
-                          auto_push_velocity, auto_push_acceleration);
+        M5.Display.printf("Push: V=%d(%ld) A=%d(%ld)    ",
+                          auto_push_velocity, encoder_ch2_value,
+                          auto_push_acceleration, encoder_ch3_value);
 
         M5.Display.setCursor(10, 200);
-        M5.Display.printf("Rtn:  V=%d A=%d      ",
-                          auto_return_velocity, auto_return_acceleration);
+        M5.Display.printf("Rtn:  V=%d(%ld) A=%d(%ld)    ",
+                          auto_return_velocity, encoder_ch4_value,
+                          auto_return_acceleration, encoder_ch5_value);
 
         M5.Display.setCursor(10, 220);
         M5.Display.printf("Motor: %d   ", present_position);
