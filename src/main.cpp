@@ -50,6 +50,25 @@ const int MAX_POSITION = 4095;     // XL430 position range: 0-4095 (0-360 degree
                                    // 0 = 0°, 2048 = 180°, 4095 = 360°
 const int ENCODER_COUNTS_PER_REV = 60;  // Encoder counts per full rotation
 
+// Manual mode control variables
+int current_velocity = 0;          // Track current velocity setting
+int current_acceleration = 0;      // Track current acceleration setting
+int direction_multiplier = 1;      // Direction: 1 = FWD, -1 = REV
+
+// Auto mode control variables
+unsigned long cycle_start_time = 0;     // When current cycle started
+bool auto_mode_active = false;          // Track if we're in auto mode
+
+// Auto mode parameters (controllable via encoders)
+int auto_cycle_time = 2000;             // Total cycle time (ms) - CH1
+int auto_push_velocity = 800;           // Fast push velocity - CH2
+int auto_push_acceleration = 200;       // Fast push acceleration - CH3
+int auto_return_velocity = 50;          // Slow return velocity - CH4
+int auto_return_acceleration = 10;      // Slow return acceleration - CH5
+int auto_push_ratio = 50;               // Push time as % of cycle (10-90%) - CH6
+int auto_direction_swap = 1;            // Direction multiplier: 1=normal, -1=swapped - CH7
+int auto_stroke_range = 1024;           // Stroke range in units (±90°) - CH8
+
 // ============================================================================
 // SETUP - Runs once when M5Stack starts
 // ============================================================================
@@ -116,11 +135,12 @@ void setup() {
         dxl.torqueOff(DXL_ID);                        // Turn off torque (motor can move freely)
         dxl.setOperatingMode(DXL_ID, OP_EXTENDED_POSITION);  // Extended position = unlimited rotations
 
-        // Set motion profile for REAL-TIME encoder control
-        // Profile Velocity: 0 = maximum speed (instant response)
-        // Profile Acceleration: 0 = maximum acceleration (no smoothing)
-        dxl.setProfileVelocity(DXL_ID, 0);
-        dxl.setProfileAcceleration(DXL_ID, 0);
+        // Set initial motion profile
+        // We'll update these in loop() based on encoder values
+        current_velocity = 300;          // Initial velocity
+        current_acceleration = 100;      // Initial acceleration
+        dxl.setProfileVelocity(DXL_ID, current_velocity);
+        dxl.setProfileAcceleration(DXL_ID, current_acceleration);
 
         dxl.torqueOn(DXL_ID);                         // Turn on torque (motor locked to position)
 
@@ -148,45 +168,305 @@ void loop() {
     // Read switch status (returns true/false for switch state)
     bool switch_status = encoder.getSwitchStatus();
 
-    // Read Channel 1 encoder value (incremental counter)
-    int32_t encoder_value = encoder.getEncoderValue(0);  // Channel 0 = Channel 1
+    // Read all encoder values and buttons
+    int32_t encoder_ch1_value = encoder.getEncoderValue(0);
+    int32_t encoder_ch2_value = encoder.getEncoderValue(1);
+    int32_t encoder_ch3_value = encoder.getEncoderValue(2);
+    int32_t encoder_ch4_value = encoder.getEncoderValue(3);
+    int32_t encoder_ch5_value = encoder.getEncoderValue(4);
+    int32_t encoder_ch6_value = encoder.getEncoderValue(5);
+    int32_t encoder_ch7_value = encoder.getEncoderValue(6);
+    int32_t encoder_ch8_value = encoder.getEncoderValue(7);
+
+    bool encoder_ch1_button = encoder.getButtonStatus(0);
+    bool encoder_ch2_button = encoder.getButtonStatus(1);
+    bool encoder_ch3_button = encoder.getButtonStatus(2);
+    bool encoder_ch4_button = encoder.getButtonStatus(3);
+    bool encoder_ch5_button = encoder.getButtonStatus(4);
+    bool encoder_ch6_button = encoder.getButtonStatus(5);
+    bool encoder_ch7_button = encoder.getButtonStatus(6);
+    bool encoder_ch8_button = encoder.getButtonStatus(7);
 
     // ========================================================================
-    // MAP ENCODER TO MOTOR POSITION (EXTENDED MODE - MULTI-TURN)
+    // MODE SELECTION: MANUAL (SWITCH OFF) vs AUTO (SWITCH ON)
     // ========================================================================
-    // Scale encoder value to motor position
-    // Encoder: 60 counts per rotation
-    // Motor: 4095 positions per rotation (0-360°)
-    // Extended mode: Motor can go beyond 0-4095 (unlimited rotations)
-    // Scale factor: 4095 / 60 = 68.25
-
-    int position = (-encoder_value * MAX_POSITION) / ENCODER_COUNTS_PER_REV;
-    // -encoder is counter-clockwise, +encoder is clockwise.
-
-    // NO WRAPPING - let position go beyond 0-4095 for continuous rotation
-    // Extended position mode handles multi-turn automatically
-
-    // Send position to motor (ALWAYS - removed switch check)
     if(!switch_status){
-    dxl.setGoalPosition(DXL_ID, position);
+        // ====================================================================
+        // MANUAL MODE
+        // ====================================================================
+
+        // Reset auto mode flag when entering manual mode
+        if (auto_mode_active) {
+            auto_mode_active = false;
+            M5.Display.clear();  // Clear display when switching modes
+        }
+
+        // ----------------------------------------------------------------
+        // ENCODER CH4: DIRECTION TOGGLE (BUTTON)
+        // ----------------------------------------------------------------
+        static bool last_ch4_button = false;
+        if (encoder_ch4_button && !last_ch4_button) {  // Button press detected
+            direction_multiplier *= -1;  // Toggle between 1 and -1
+        }
+        last_ch4_button = encoder_ch4_button;
+
+        // ----------------------------------------------------------------
+        // ENCODER CH1: POSITION CONTROL
+        // ----------------------------------------------------------------
+        int position = (-encoder_ch1_value * MAX_POSITION * direction_multiplier) / ENCODER_COUNTS_PER_REV;
+
+        // ----------------------------------------------------------------
+        // ENCODER CH2: VELOCITY CONTROL
+        // ----------------------------------------------------------------
+        int new_velocity = 50 + (abs(encoder_ch2_value) * 10);
+        if (new_velocity > 1000) new_velocity = 1000;
+
+        if (new_velocity != current_velocity) {
+            dxl.setProfileVelocity(DXL_ID, new_velocity);
+            current_velocity = new_velocity;
+        }
+
+        // ----------------------------------------------------------------
+        // ENCODER CH3: ACCELERATION CONTROL
+        // ----------------------------------------------------------------
+        int new_acceleration = 10 + (abs(encoder_ch3_value) * 5);
+        if (new_acceleration > 255) new_acceleration = 255;
+
+        if (new_acceleration != current_acceleration) {
+            dxl.setProfileAcceleration(DXL_ID, new_acceleration);
+            current_acceleration = new_acceleration;
+        }
+
+        // ----------------------------------------------------------------
+        // SEND POSITION COMMAND
+        // ----------------------------------------------------------------
+        dxl.setGoalPosition(DXL_ID, position);
+
+    } else {
+        // ====================================================================
+        // AUTO MODE - WATER RIPPLE CYCLE
+        // ====================================================================
+
+        // Initialize auto mode on first entry
+        if (!auto_mode_active) {
+            auto_mode_active = true;
+            cycle_start_time = millis();
+            M5.Display.clear();  // Clear display when switching modes
+        }
+
+        // ----------------------------------------------------------------
+        // ENCODER CONTROLS FOR AUTO MODE
+        // ----------------------------------------------------------------
+
+        // CH1: CYCLE TIME (500-5000ms)
+        auto_cycle_time = 500 + (abs(encoder_ch1_value) * 50);
+        if (auto_cycle_time > 5000) auto_cycle_time = 5000;
+        // Button: Reset to default
+        static bool last_ch1_button = false;
+        if (encoder_ch1_button && !last_ch1_button) {
+            encoder.resetCounter(0);  // Reset encoder to 0
+        }
+        last_ch1_button = encoder_ch1_button;
+
+        // CH2: PUSH VELOCITY (100-1000)
+        auto_push_velocity = 100 + (abs(encoder_ch2_value) * 10);
+        if (auto_push_velocity > 1000) auto_push_velocity = 1000;
+        // Button: Set to maximum
+        static bool last_ch2_button = false;
+        if (encoder_ch2_button && !last_ch2_button) {
+            auto_push_velocity = 1000;
+        }
+        last_ch2_button = encoder_ch2_button;
+
+        // CH3: PUSH ACCELERATION (50-255)
+        auto_push_acceleration = 50 + (abs(encoder_ch3_value) * 5);
+        if (auto_push_acceleration > 255) auto_push_acceleration = 255;
+        // Button: Set to maximum
+        static bool last_ch3_button = false;
+        if (encoder_ch3_button && !last_ch3_button) {
+            auto_push_acceleration = 255;
+        }
+        last_ch3_button = encoder_ch3_button;
+
+        // CH4: RETURN VELOCITY (10-200)
+        auto_return_velocity = 10 + (abs(encoder_ch4_value) * 5);
+        if (auto_return_velocity > 200) auto_return_velocity = 200;
+        // Button: Set to minimum
+        static bool last_ch4_button_auto = false;
+        if (encoder_ch4_button && !last_ch4_button_auto) {
+            auto_return_velocity = 10;
+        }
+        last_ch4_button_auto = encoder_ch4_button;
+
+        // CH5: RETURN ACCELERATION (5-100)
+        auto_return_acceleration = 5 + (abs(encoder_ch5_value) * 2);
+        if (auto_return_acceleration > 100) auto_return_acceleration = 100;
+        // Button: Set to minimum
+        static bool last_ch5_button = false;
+        if (encoder_ch5_button && !last_ch5_button) {
+            auto_return_acceleration = 5;
+        }
+        last_ch5_button = encoder_ch5_button;
+
+        // CH6: PUSH/RETURN RATIO (10-90%)
+        auto_push_ratio = 10 + (abs(encoder_ch6_value) * 2);
+        if (auto_push_ratio > 90) auto_push_ratio = 90;
+        if (auto_push_ratio < 10) auto_push_ratio = 10;
+        // Button: Reset to 50%
+        static bool last_ch6_button = false;
+        if (encoder_ch6_button && !last_ch6_button) {
+            encoder.resetCounter(5);  // Reset CH6 encoder
+        }
+        last_ch6_button = encoder_ch6_button;
+
+        // CH7: DIRECTION SWAP (button only)
+        static bool last_ch7_button = false;
+        if (encoder_ch7_button && !last_ch7_button) {
+            auto_direction_swap *= -1;  // Toggle between 1 and -1
+        }
+        last_ch7_button = encoder_ch7_button;
+
+        // CH8: STROKE RANGE (0-4096 units, 0-360°)
+        auto_stroke_range = abs(encoder_ch8_value) * 10;
+        if (auto_stroke_range > 4096) auto_stroke_range = 4096;
+        // Button: Cycle through presets
+        static bool last_ch8_button = false;
+        static int range_preset = 1;  // 0=±45°, 1=±90°, 2=±180°
+        if (encoder_ch8_button && !last_ch8_button) {
+            range_preset = (range_preset + 1) % 3;
+            if (range_preset == 0) auto_stroke_range = 512;   // ±45°
+            if (range_preset == 1) auto_stroke_range = 1024;  // ±90°
+            if (range_preset == 2) auto_stroke_range = 2048;  // ±180°
+        }
+        last_ch8_button = encoder_ch8_button;
+
+        // ----------------------------------------------------------------
+        // CALCULATE CYCLE TIMING
+        // ----------------------------------------------------------------
+        unsigned long current_time = millis();
+        unsigned long elapsed_time = current_time - cycle_start_time;
+        unsigned long time_in_cycle = elapsed_time % auto_cycle_time;
+
+        // Calculate push and return times based on ratio
+        int push_time = (auto_cycle_time * auto_push_ratio) / 100;
+        int return_time = auto_cycle_time - push_time;
+
+        // ----------------------------------------------------------------
+        // STATE MACHINE: PUSH vs RETURN STROKE
+        // ----------------------------------------------------------------
+        int target_position;
+        int target_velocity;
+        int target_acceleration;
+
+        if (time_in_cycle < push_time) {
+            // ============================================================
+            // PUSH STROKE: FAST - creates water ripple
+            // ============================================================
+            target_position = -auto_stroke_range * auto_direction_swap;
+            target_velocity = auto_push_velocity;
+            target_acceleration = auto_push_acceleration;
+
+        } else {
+            // ============================================================
+            // RETURN STROKE: SLOW - gentle return
+            // ============================================================
+            target_position = auto_stroke_range * auto_direction_swap;
+            target_velocity = auto_return_velocity;
+            target_acceleration = auto_return_acceleration;
+        }
+
+        // ----------------------------------------------------------------
+        // UPDATE MOTOR PROFILE AND POSITION
+        // ----------------------------------------------------------------
+        // Update velocity/acceleration only if changed
+        if (target_velocity != current_velocity) {
+            dxl.setProfileVelocity(DXL_ID, target_velocity);
+            current_velocity = target_velocity;
+        }
+
+        if (target_acceleration != current_acceleration) {
+            dxl.setProfileAcceleration(DXL_ID, target_acceleration);
+            current_acceleration = target_acceleration;
+        }
+
+        // Send target position
+        dxl.setGoalPosition(DXL_ID, target_position);
     }
+
     // ========================================================================
     // READ CURRENT MOTOR POSITION
     // ========================================================================
     int32_t present_position = dxl.getPresentPosition(DXL_ID);
     // ========================================================================
-    // DISPLAY DEBUG INFO
+    // DISPLAY INFO
     // ========================================================================
-    M5.Display.setCursor(10, 100);
-    M5.Display.printf("Switch: %s    ", switch_status ? "ON" : "OFF");
-    M5.Display.setCursor(10, 120);
-    M5.Display.printf("Enc CH1: %ld    ", encoder_value);
-    M5.Display.setCursor(10, 140);
-    M5.Display.printf("Enc->Pos: %d    ", position);
-    M5.Display.setCursor(10, 160);
-    M5.Display.printf("Motor: %d    ", present_position);
-    // M5.Display.setCursor(10, 180);
-    // M5.Display.printf("Error: %d    ", position - present_position);
+    if (!switch_status) {
+        // MANUAL MODE DISPLAY
+        M5.Display.setCursor(10, 100);
+        M5.Display.printf("Mode: MANUAL  Dir: %s    ",
+                          direction_multiplier == 1 ? "FWD" : "REV");
 
-    delay(1000/120.);  // Update 20 times per second
+        M5.Display.setCursor(10, 120);
+        M5.Display.printf("CH1 Pos: %ld    ", encoder_ch1_value);
+        M5.Display.setCursor(10, 140);
+        M5.Display.printf("CH2 Vel: %d (raw:%ld)  ", current_velocity, encoder_ch2_value);
+        M5.Display.setCursor(10, 160);
+        M5.Display.printf("CH3 Acc: %d (raw:%ld)  ", current_acceleration, encoder_ch3_value);
+        M5.Display.setCursor(10, 180);
+        M5.Display.printf("Motor Pos: %d    ", present_position);
+
+    } else {
+        // AUTO MODE DISPLAY
+        unsigned long current_time = millis();
+        unsigned long elapsed_time = current_time - cycle_start_time;
+        unsigned long time_in_cycle = elapsed_time % auto_cycle_time;
+        int cycle_progress = (time_in_cycle * 100) / auto_cycle_time;
+
+        int push_time = (auto_cycle_time * auto_push_ratio) / 100;
+        int stroke_angle = (auto_stroke_range * 360) / 4096;  // Convert to degrees
+
+        M5.Display.setCursor(10, 100);
+        M5.Display.println("=== AUTO MODE ===");
+
+        M5.Display.setCursor(10, 120);
+        if (time_in_cycle < push_time) {
+            M5.Display.printf("Stroke: PUSH  Dir:%s    ",
+                              auto_direction_swap == 1 ? "NORM" : "SWAP");
+        } else {
+            M5.Display.printf("Stroke: RETURN  Dir:%s  ",
+                              auto_direction_swap == 1 ? "NORM" : "SWAP");
+        }
+
+        M5.Display.setCursor(10, 140);
+        M5.Display.printf("Cycle:%dms Ratio:%d/%d%%   ",
+                          auto_cycle_time, auto_push_ratio, 100-auto_push_ratio);
+
+        M5.Display.setCursor(10, 160);
+        M5.Display.printf("Range:+-%d deg (%d)    ",
+                          stroke_angle, auto_stroke_range);
+
+        M5.Display.setCursor(10, 180);
+        M5.Display.printf("Push: V=%d A=%d      ",
+                          auto_push_velocity, auto_push_acceleration);
+
+        M5.Display.setCursor(10, 200);
+        M5.Display.printf("Rtn:  V=%d A=%d      ",
+                          auto_return_velocity, auto_return_acceleration);
+
+        // Progress bar
+        M5.Display.setCursor(10, 220);
+        M5.Display.print("[");
+        int bar_width = 25;
+        int filled = (cycle_progress * bar_width) / 100;
+        for (int i = 0; i < bar_width; i++) {
+            if (i < filled) {
+                M5.Display.print("=");
+            } else {
+                M5.Display.print(" ");
+            }
+        }
+        M5.Display.printf("] %d%%  ", cycle_progress);
+    }
+
+    delay(1000/120.);  // Update 120 times per second
 }
