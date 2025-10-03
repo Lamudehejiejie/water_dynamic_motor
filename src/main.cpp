@@ -74,7 +74,20 @@ int auto_stroke_range = 1024;           // Stroke range in units (±90°) - CH8
 // SETUP - Runs once when M5Stack starts
 // ============================================================================
 void setup() {
-    // Initialize M5Stack hardware (display, buttons, sensors)
+    // ========================================================================
+    // INITIALIZE I2C FOR ENCODER FIRST (before M5Stack)
+    // ========================================================================
+    // This needs to happen early to avoid conflicts
+    // M5Stack CoreS3 Port.A: SDA=GPIO2, SCL=GPIO1
+
+    // Wait for power to stabilize
+    delay(2000);  // Longer initial delay
+
+    // Initialize I2C bus
+    Wire.begin(2, 1);
+    delay(500);
+
+    // Initialize M5Stack hardware AFTER I2C is ready
     auto cfg = M5.config();
     M5.begin(cfg);
 
@@ -84,40 +97,39 @@ void setup() {
     M5.Display.setCursor(10, 10);
     M5.Display.println("Motor + Encoder Control");
 
-    // ========================================================================
-    // INITIALIZE I2C FOR ENCODER
-    // ========================================================================
-    // M5Stack CoreS3 Port.A: SDA=GPIO2, SCL=GPIO1
-
-    // Initialize 8-Encoder Unit with retry logic
-    // Sometimes the encoder needs a moment to initialize after power-on
+    // Try to initialize encoder with retries
     encoder_found = false;
-    for (int retry = 0; retry < 10; retry++) {
-        delay(300);  // Wait longer between attempts
-
-        // Reinitialize I2C on each retry to ensure clean state
-        if (retry > 0) {
+    for (int retry = 0; retry < 30; retry++) {
+        // Every 5th retry, do a full I2C reset
+        if (retry > 0 && retry % 5 == 0) {
+            M5.Display.setCursor(10, 20);
+            M5.Display.printf("Retry %d - Resetting I2C...", retry);
             Wire.end();
-            delay(100);
+            delay(500);
+            Wire.begin(2, 1);
+            delay(500);
         }
-        Wire.begin(2, 1);
-        delay(100);
 
+        // Try to initialize encoder
         if (encoder.begin(&Wire, ENCODER_I2C_ADDR, 2, 1)) {
             M5.Display.setCursor(10, 20);
-            M5.Display.printf("Encoder found! (try %d)", retry + 1);
+            M5.Display.printf("Encoder OK! (try %d)    ", retry + 1);
 
             // Don't reset encoder - keep current value to maintain position
-            // This allows the motor to start from its current position
-
             encoder_found = true;
             break;  // Success - exit retry loop
         }
+
+        delay(300);  // Wait between attempts
     }
 
     if (!encoder_found) {
         M5.Display.setCursor(10, 20);
-        M5.Display.println("Encoder NOT found - HALT");
+        M5.Display.println("Encoder NOT found!");
+        M5.Display.setCursor(10, 40);
+        M5.Display.println("1. Check wiring");
+        M5.Display.setCursor(10, 60);
+        M5.Display.println("2. Press RESET button");
         while(1) { delay(100); }  // Stop here if no encoder after retries
     }
 
