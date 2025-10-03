@@ -88,13 +88,21 @@ void setup() {
     // INITIALIZE I2C FOR ENCODER
     // ========================================================================
     // M5Stack CoreS3 Port.A: SDA=GPIO2, SCL=GPIO1
-    Wire.begin(2, 1);  // Initialize I2C with SDA=GPIO2, SCL=GPIO1
 
     // Initialize 8-Encoder Unit with retry logic
     // Sometimes the encoder needs a moment to initialize after power-on
     encoder_found = false;
-    for (int retry = 0; retry < 5; retry++) {
-        delay(100);  // Wait a bit before each attempt
+    for (int retry = 0; retry < 10; retry++) {
+        delay(300);  // Wait longer between attempts
+
+        // Reinitialize I2C on each retry to ensure clean state
+        if (retry > 0) {
+            Wire.end();
+            delay(100);
+        }
+        Wire.begin(2, 1);
+        delay(100);
+
         if (encoder.begin(&Wire, ENCODER_I2C_ADDR, 2, 1)) {
             M5.Display.setCursor(10, 20);
             M5.Display.printf("Encoder found! (try %d)", retry + 1);
@@ -333,12 +341,12 @@ void loop() {
         if (auto_return_acceleration > 1000) auto_return_acceleration = 1000;
 
         // CH6: PUSH/RETURN RATIO (10-90%)
-        auto_push_ratio = 10 + (abs(encoder_ch6_value) * 2);
+        auto_push_ratio = 45 + (abs(encoder_ch6_value) * 2);
         if (auto_push_ratio > 90) auto_push_ratio = 90;
-        if (auto_push_ratio < 10) auto_push_ratio = 10;
+        if (auto_push_ratio < 45) auto_push_ratio = 45;
 
         // CH7: STROKE RANGE (0-4096 units, 0-360°)
-        auto_stroke_range = abs(encoder_ch7_value) * 10;
+        auto_stroke_range = 30 + abs(encoder_ch7_value) * 10;
         if (auto_stroke_range > 4096) auto_stroke_range = 4096;
 
         // CH8: DIRECTION SWAP (button only)
