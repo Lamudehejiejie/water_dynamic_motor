@@ -83,11 +83,34 @@ void setup() {
     // Wait for power to stabilize
     delay(2000);  // Longer initial delay
 
-    // Initialize I2C bus
-    Wire.begin(2, 1);
-    delay(500);
+    // ========================================================================
+    // AGGRESSIVE I2C BUS CLEANUP ON STARTUP
+    // ========================================================================
+    // Send multiple reset attempts to clear any stuck state on I2C devices
+    for (int i = 0; i < 3; i++) {
+        Wire.begin(2, 1);
+        delay(100);
 
-    // Initialize M5Stack hardware AFTER I2C is ready
+        // Send general call reset to all I2C devices
+        Wire.beginTransmission(0x00);
+        Wire.write(0x06);  // General call reset
+        Wire.endTransmission();
+        delay(200);
+
+        // Send stop conditions to clear bus
+        Wire.beginTransmission(ENCODER_I2C_ADDR);
+        Wire.endTransmission();
+        delay(200);
+
+        Wire.end();
+        delay(500);
+    }
+
+    // Final I2C initialization
+    Wire.begin(2, 1);
+    delay(1000);
+
+    // Initialize M5Stack hardware AFTER I2C cleanup
     auto cfg = M5.config();
     M5.begin(cfg);
 
@@ -96,17 +119,31 @@ void setup() {
     M5.Display.setTextSize(1.5);
     M5.Display.setCursor(10, 10);
     M5.Display.println("Motor + Encoder Control");
+    M5.Display.setCursor(10, 20);
+    M5.Display.println("Cleaning I2C bus...");
+    delay(1000);
 
     // Try to initialize encoder with retries
     encoder_found = false;
-    for (int retry = 0; retry < 30; retry++) {
-        // Every 5th retry, do a full I2C reset
+    for (int retry = 0; retry < 50; retry++) {
+        // Every 5th retry, do a full I2C reset with longer delays
         if (retry > 0 && retry % 5 == 0) {
             M5.Display.setCursor(10, 20);
-            M5.Display.printf("Retry %d - Resetting I2C...", retry);
+            M5.Display.printf("Retry %d - Deep reset...    ", retry);
+            M5.Display.setCursor(10, 40);
+            M5.Display.println("Please try unplug the encoder...    ");
+            // Complete I2C bus reset
             Wire.end();
-            delay(500);
+            delay(1000);  // Longer delay to let bus settle
+
+            // Reinitialize I2C
             Wire.begin(2, 1);
+            delay(1000);
+
+            // Try sending general call reset to I2C bus (address 0x00)
+            Wire.beginTransmission(0x00);
+            Wire.write(0x06);  // General call reset command
+            Wire.endTransmission();
             delay(500);
         }
 
@@ -115,12 +152,16 @@ void setup() {
             M5.Display.setCursor(10, 20);
             M5.Display.printf("Encoder OK! (try %d)    ", retry + 1);
 
-            // Don't reset encoder - keep current value to maintain position
+            // Reset all encoder counters to clear any stuck state
+            for (int ch = 0; ch < 8; ch++) {
+                encoder.resetCounter(ch);
+            }
+
             encoder_found = true;
             break;  // Success - exit retry loop
         }
 
-        delay(300);  // Wait between attempts
+        delay(400);  // Wait between attempts
     }
 
     if (!encoder_found) {
