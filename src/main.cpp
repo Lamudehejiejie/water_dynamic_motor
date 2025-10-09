@@ -70,7 +70,7 @@ bool use_encoder_control = false;       // Flag: use encoder values or keep defa
 
 // Power scaling factor: maps user range (0-2000) to motor capability
 // 0.5 = 50% of max motor power (max 32767), 1.0 = 100% of motor power
-const float POWER_SCALE = 0.5;          // Adjust this to increase/decrease max power
+const float POWER_SCALE = 0.2;          // Adjust this to increase/decrease max power
 
 // Auto mode parameters (controllable via encoders)
 int auto_cycle_time = 3000;             // Total cycle time (ms) - CH1 - Default: 5000ms
@@ -541,22 +541,22 @@ void loop() {
             if (auto_cycle_time > 8000) auto_cycle_time = 8000;
 
             // CH2: PUSH VELOCITY (200-2000 user range, scaled to motor capability)
-            int user_push_velocity = 200 + (abs(encoder_ch2_value) * 2.5);
+            int user_push_velocity = 50 + (abs(encoder_ch2_value) * 2.5);
             if (user_push_velocity > 2000) user_push_velocity = 2000;
             auto_push_velocity = (int)(user_push_velocity * POWER_SCALE * 32767 / 2000);
 
             // CH3: PUSH ACCELERATION (100-2000 user range, scaled to motor capability)
-            int user_push_acceleration = 100 + (abs(encoder_ch3_value) * 2.5);
+            int user_push_acceleration = 50 + (abs(encoder_ch3_value) * 2.5);
             if (user_push_acceleration > 2000) user_push_acceleration = 2000;
             auto_push_acceleration = (int)(user_push_acceleration * POWER_SCALE * 32767 / 2000);
 
             // CH4: RETURN VELOCITY (200-2000 user range, scaled to motor capability)
-            int user_return_velocity = 200 + (abs(encoder_ch4_value) * 2.5);
+            int user_return_velocity = 10 + (abs(encoder_ch4_value) * 2.5);
             if (user_return_velocity > 2000) user_return_velocity = 2000;
             auto_return_velocity = (int)(user_return_velocity * POWER_SCALE * 32767 / 2000);
 
             // CH5: RETURN ACCELERATION (100-2000 user range, scaled to motor capability)
-            int user_return_acceleration = 100 + (abs(encoder_ch5_value) * 2.5);
+            int user_return_acceleration = 10 + (abs(encoder_ch5_value) * 2.5);
             if (user_return_acceleration > 2000) user_return_acceleration = 2000;
             auto_return_acceleration = (int)(user_return_acceleration * POWER_SCALE * 32767 / 2000);
 
@@ -737,7 +737,7 @@ void loop() {
         }
 
         M5.Display.setCursor(10, 160);
-        M5.Display.printf("Cycle:%dms(%ld) R:%d/%d%%",
+        M5.Display.printf("Cycle:%dms(%ld) R:%d/%d%",
                           auto_cycle_time, encoder_ch1_value, auto_push_ratio, 100-auto_push_ratio);
 
         M5.Display.setCursor(10, 180);
