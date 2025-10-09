@@ -124,7 +124,7 @@ void setup() {
     M5.Display.setTextSize(1.5);
     M5.Display.setCursor(10, 10);
     M5.Display.println("Motor + Encoder Control");
-    M5.Display.setCursor(10, 20);
+    M5.Display.setCursor(10, 30);
     M5.Display.println("Cleaning I2C bus...");
     delay(100);
 
@@ -133,9 +133,9 @@ void setup() {
     for (int retry = 0; retry < 25; retry++) {  // Reduced from 50 to 25
         // Every 5th retry, do a full I2C reset
         if (retry > 0 && retry % 5 == 0) {
-            M5.Display.setCursor(10, 20);
-            M5.Display.printf("Retry %d - Deep reset...    ", retry);
             M5.Display.setCursor(10, 40);
+            M5.Display.printf("Retry %d - Deep reset...    ", retry);
+            M5.Display.setCursor(10, 60);
             M5.Display.println("Try unplug encoder if stuck");
             // Complete I2C bus reset
             Wire.end();
@@ -154,8 +154,8 @@ void setup() {
 
         // Try to initialize encoder
         if (encoder.begin(&Wire, ENCODER_I2C_ADDR, 2, 1)) {
-            M5.Display.setCursor(10, 20);
-            M5.Display.printf("Encoder OK! (try %d)    ", retry + 1);
+            // M5.Display.setCursor(10, 80);
+            // M5.Display.printf("Encoder OK! (try %d)    ", retry + 1);
 
             // Reset all encoder counters MULTIPLE TIMES to clear any stuck state after power cycle
             for (int reset_attempt = 0; reset_attempt < 5; reset_attempt++) {
@@ -168,8 +168,8 @@ void setup() {
             // Verify CH1 is actually 0
             delay(100);
             int32_t ch1_check = encoder.getEncoderValue(0);
-            M5.Display.setCursor(10, 40);
-            M5.Display.printf("CH1 value: %ld        ", ch1_check);
+            // M5.Display.setCursor(10, 40);
+            // M5.Display.printf("CH1 value: %ld        ", ch1_check);
 
             encoder_found = true;
             break;  // Success - exit retry loop
@@ -271,11 +271,11 @@ void setup() {
             dxl.ledOn(DXL_ID);
             // Encoder already reset during initialization
         } else {
-            M5.Display.println("ERROR: Torque OFF!");
-            M5.Display.setCursor(10, 130);
-            M5.Display.println("Motor may be moving");
-            M5.Display.setCursor(10, 150);
-            M5.Display.println("or has HW error");
+            // M5.Display.println("ERROR: Torque OFF!");
+            // M5.Display.setCursor(10, 130);
+            // M5.Display.println("Motor may be moving");
+            // M5.Display.setCursor(10, 150);
+            // M5.Display.println("or has HW error");
         }
     } else {
         M5.Display.setCursor(10, 50);
@@ -288,6 +288,13 @@ void setup() {
         M5.Display.println("- Wiring (A/B)");
         M5.Display.setCursor(10, 130);
         M5.Display.println("- Baud: 57600");
+    }
+
+    // Final CH1 reset right before main loop starts
+    // This ensures CH1 starts at 0 without moving the motor
+    if (encoder_found) {
+        encoder.setEncoderValue(0, 0);
+        delay(50);
     }
 
     delay(1000);  // Wait 1 second before starting loop
@@ -355,17 +362,16 @@ void loop() {
         int32_t present_velocity = dxl.getPresentVelocity(DXL_ID);
         uint8_t moving_status = dxl.readControlTableItem(ADDR_MOVING, DXL_ID);
 
-        M5.Display.fillRect(0, 100, 320, 140, BLACK);  // Clear display area
-        M5.Display.setCursor(10, 100);
-        M5.Display.println("=== SAFE MODE (AUTO) ===");
-        M5.Display.setCursor(10, 120);
-        M5.Display.printf("Target: %d (+-%ddeg)", target_position, (auto_stroke_range * 360) / MAX_POSITION);
-        M5.Display.setCursor(10, 140);
-        M5.Display.printf("Current: %d", present_position);
-        M5.Display.setCursor(10, 160);
-        M5.Display.printf("Vel: %d  Move: %s", present_velocity, moving_status ? "YES" : "NO");
-        M5.Display.setCursor(10, 180);
-        M5.Display.printf("V:%d A:%d", target_velocity, target_acceleration);
+        M5.Display.setCursor(10, 110);
+        M5.Display.printf("=== SAFE MODE (AUTO) ===     ");
+        M5.Display.setCursor(10, 130);
+        M5.Display.printf("Target: %d (+-%ddeg)      ", target_position, (auto_stroke_range * 360) / MAX_POSITION);
+        M5.Display.setCursor(10, 150);
+        M5.Display.printf("Current: %d       ", present_position);
+        M5.Display.setCursor(10, 170);
+        M5.Display.printf("Vel: %d  Move: %s      ", present_velocity, moving_status ? "YES" : "NO");
+        M5.Display.setCursor(10, 190);
+        M5.Display.printf("V:%d A:%d      ", target_velocity, target_acceleration);
 
         delay(1000/120.);
         return;  // Skip normal encoder-based control
@@ -412,8 +418,10 @@ void loop() {
             // Save current cycle time to restore it later
             saved_cycle_time = auto_cycle_time;
 
-            // Reset encoder to 0 when entering manual mode (avoids huge values)
-            encoder.setEncoderValue(0, 0);
+            // Reset ALL encoders when entering manual mode (isolate from auto mode values)
+            for (int ch = 0; ch < 8; ch++) {
+                encoder.setEncoderValue(ch, 0);
+            }
 
             // Disable encoder control so auto mode uses defaults when returning
             use_encoder_control = false;
@@ -502,6 +510,11 @@ void loop() {
 
             // Restore saved cycle time from when we left auto mode
             auto_cycle_time = saved_cycle_time;
+
+            // Reset ALL encoders when entering auto mode (isolate from manual mode values)
+            for (int ch = 0; ch < 8; ch++) {
+                encoder.setEncoderValue(ch, 0);
+            }
 
             // Start cycle timing from current position (no homing)
             cycle_start_time = millis();
@@ -651,19 +664,19 @@ void loop() {
 
         if (!switch_status) {
             // MANUAL MODE - Clean display
-            M5.Display.setCursor(10, 100);
+            M5.Display.setCursor(10, 110);
             M5.Display.printf("=== MANUAL MODE ===      ");
 
-            M5.Display.setCursor(10, 130);
-            M5.Display.printf("Position: %d          ", present_position);
+            // M5.Display.setCursor(10, 130);
+            // M5.Display.printf("Goal Pos: %d", present_position);
 
-            M5.Display.setCursor(10, 160);
+            M5.Display.setCursor(10, 140);
             M5.Display.printf("Velocity: %d (CH2:%ld)     ", current_velocity, encoder_ch2_value);
 
-            M5.Display.setCursor(10, 190);
+            M5.Display.setCursor(10, 170);
             M5.Display.printf("Accel: %d (CH3:%ld)       ", current_acceleration, encoder_ch3_value);
 
-            M5.Display.setCursor(10, 220);
+            M5.Display.setCursor(10, 200);
             M5.Display.printf("Encoder CH1: %ld          ", encoder_ch1_value);
 
     } else {
@@ -724,8 +737,8 @@ void loop() {
                           auto_return_velocity, encoder_ch4_value,
                           auto_return_acceleration, encoder_ch5_value);
 
-        M5.Display.setCursor(10, 220);
-        M5.Display.printf("Motor: %d   ", present_position);
+        // M5.Display.setCursor(10, 220);
+        // M5.Display.printf("Goal:%d", present_position);
         }
     }
 
