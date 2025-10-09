@@ -52,8 +52,9 @@ UNIT_8ENCODER encoder;           // Create encoder object
 // MOTION CONTROL VARIABLES
 // ============================================================================
 bool encoder_found = false;        // Flag: encoder detected and working?
-const int MAX_POSITION = 4095;     // XW540-T260-R position range: 4095 (0-360 degrees) - SAME as XL430!
-                                   // 0 = 0°, 2048 = 180°, 4095 = 360°
+const int MAX_POSITION = 4095;     // XW540-T260-R: 4095 = 360° (one full rotation)
+const int MAX_POSITION_LIMIT = 4914;  // Allow 1.2 rotations (4095 × 1.2 = 4914)
+                                   // 0 = 0°, 2048 = 180°, 4095 = 360°, 4914 = 432°
 const int ENCODER_COUNTS_PER_REV = 60;  // Encoder counts per full rotation
 
 // Manual mode control variables
@@ -64,18 +65,18 @@ int direction_multiplier = -1;      // Direction: 1 = FWD, -1 = REV
 // Auto mode control variables
 unsigned long cycle_start_time = 0;     // When current cycle started
 bool auto_mode_active = false;          // Track if we're in auto mode
-int saved_cycle_time = 2000;            // Remember cycle time when switching modes
+int saved_cycle_time = 5000;            // Remember cycle time when switching modes (default: 5000ms)
 bool use_encoder_control = false;       // Flag: use encoder values or keep defaults
 
 // Auto mode parameters (controllable via encoders)
-int auto_cycle_time = 2000;             // Total cycle time (ms) - CH1
-int auto_push_velocity = 1200;          // Fast push velocity (500-2000) - CH2
-int auto_push_acceleration = 2000;      // Fast push acceleration (100-5000) - CH3
+int auto_cycle_time = 5000;             // Total cycle time (ms) - CH1 - Default: 5000ms
+int auto_push_velocity = 1000;          // Fast push velocity (500-2000) - CH2 - Default: 1000
+int auto_push_acceleration = 330;       // Fast push acceleration (100-5000) - CH3 - Default: 330
 int auto_return_velocity = 100;         // Slow return velocity (50-500) - CH4
 int auto_return_acceleration = 100;     // Slow return acceleration (10-1000) - CH5
-int auto_push_ratio = 50;               // Push time as % of cycle (10-90%) - CH6
-int auto_direction_swap = 1;            // Direction multiplier: 1=normal, -1=swapped - CH7
-int auto_stroke_range = 1024;           // Stroke range in units (±90°) - CH8 (4096/4 = 1024 = 90deg)
+int auto_push_ratio = 33;               // Push time as % of cycle (5-90%) - CH6 - Default: 33%
+int auto_direction_swap = -1;           // Direction multiplier: 1=normal, -1=swapped - CH7
+int auto_stroke_range = 2964;           // Stroke range in units (±260°) - CH8 - Default: 2964 (260°)
 
 // ============================================================================
 // SETUP - Runs once when M5Stack starts
@@ -230,7 +231,8 @@ void setup() {
         dxl.torqueOff(DXL_ID);
         delay(100);
 
-        dxl.setOperatingMode(DXL_ID, OP_EXTENDED_POSITION);
+        // Use Position Control Mode (0-4095) instead of Extended Position
+        dxl.setOperatingMode(DXL_ID, OP_POSITION);
         delay(100);
 
         // Set motion profile
@@ -254,6 +256,15 @@ void setup() {
         if (torque_check == 1) {
             M5.Display.println("Ready! Torque ON");
             dxl.ledOn(DXL_ID);
+
+            // Reset encoder to 0 on startup (if encoder is connected)
+            if (encoder_found) {
+                for (int ch = 0; ch < 8; ch++) {
+                    encoder.resetCounter(ch);
+                }
+                M5.Display.setCursor(10, 130);
+                M5.Display.println("Encoder reset to 0");
+            }
         } else {
             M5.Display.println("ERROR: Torque OFF!");
             M5.Display.setCursor(10, 130);
@@ -287,11 +298,11 @@ void loop() {
     // SAFE MODE - Run default auto mode if encoder not found
     // ========================================================================
     if (!encoder_found) {
-        // Force auto mode on with default settings (±180° for XW540)
+        // Force auto mode on with default settings (±260° for XW540)
         if (!auto_mode_active) {
             auto_mode_active = true;
             cycle_start_time = millis();
-            auto_stroke_range = 2048;  // ±180 degrees (4096/2 = 2048)
+            auto_stroke_range = 2964;  // ±260 degrees (2964 units)
         }
 
         // Calculate cycle timing
@@ -316,6 +327,10 @@ void loop() {
             target_velocity = auto_return_velocity;
             target_acceleration = auto_return_acceleration;
         }
+
+        // Limit to valid range (0-4914, allowing 1.2 rotations)
+        if (target_position < 0) target_position = 0;
+        if (target_position > MAX_POSITION_LIMIT) target_position = MAX_POSITION_LIMIT;
 
         // Update motor profile
         if (target_velocity != current_velocity) {
@@ -392,11 +407,8 @@ void loop() {
             // Save current cycle time to restore it later
             saved_cycle_time = auto_cycle_time;
 
-            // Get current motor position and set encoder to match it (no homing)
-            int32_t current_motor_position = dxl.getPresentPosition(DXL_ID);
-            // Calculate encoder value that corresponds to current motor position
-            int32_t new_encoder_value = -(current_motor_position * ENCODER_COUNTS_PER_REV) / (MAX_POSITION * direction_multiplier);
-            encoder.setEncoderValue(0, new_encoder_value);
+            // Reset encoder to 0 when entering manual mode (avoids huge values)
+            encoder.setEncoderValue(0, 0);
         }
 
         // ----------------------------------------------------------------
@@ -430,6 +442,10 @@ void loop() {
         // ----------------------------------------------------------------
         int position = (-encoder_ch1_value * MAX_POSITION * direction_multiplier) / ENCODER_COUNTS_PER_REV;
 
+        // Limit position to valid range (0-4914, allowing 1.2 rotations)
+        if (position < 0) position = 0;
+        if (position > MAX_POSITION_LIMIT) position = MAX_POSITION_LIMIT;
+
         // ----------------------------------------------------------------
         // ENCODER CH2: VELOCITY CONTROL
         // ----------------------------------------------------------------
@@ -446,9 +462,9 @@ void loop() {
         // ----------------------------------------------------------------
         // ENCODER CH3: ACCELERATION CONTROL
         // ----------------------------------------------------------------
-        // Range: 0-5000 (wide range for noticeable control)
+        // Range: 10-5000 (wide range for noticeable control)
         // Use max(0, value) so negative values = 0 (stay at minimum)
-        int new_acceleration = max(0, encoder_ch3_value) * 2.5;
+        int new_acceleration = 10 + (max(0, encoder_ch3_value) * 5);
         if (new_acceleration > 5000) new_acceleration = 5000;
 
         if (new_acceleration != current_acceleration) {
@@ -520,13 +536,13 @@ void loop() {
             if (auto_return_acceleration > 1000) auto_return_acceleration = 1000;
 
             // CH6: PUSH/RETURN RATIO (45-90%)
-            auto_push_ratio = 45 + (abs(encoder_ch6_value) * 2);
+            auto_push_ratio = 5 + (abs(encoder_ch6_value) * 2);
             if (auto_push_ratio > 90) auto_push_ratio = 90;
-            if (auto_push_ratio < 45) auto_push_ratio = 45;
+            if (auto_push_ratio < 5) auto_push_ratio = 5;
 
-            // CH7: STROKE RANGE (512-4096 units, 45-360°)
-            auto_stroke_range = 512 + abs(encoder_ch7_value) * 10;
-            if (auto_stroke_range > 4096) auto_stroke_range = 4096;
+            // CH7: STROKE RANGE (512-4914 units, 45-432°, up to 1.2 rotations)
+            auto_stroke_range = 512 + abs(encoder_ch7_value) * 12;
+            if (auto_stroke_range > MAX_POSITION_LIMIT) auto_stroke_range = MAX_POSITION_LIMIT;
         }
 
         // Button: Reset to default (always check)
@@ -585,6 +601,10 @@ void loop() {
             target_acceleration = auto_return_acceleration;
         }
 
+        // Limit to valid range (0-4914, allowing 1.2 rotations)
+        if (target_position < 0) target_position = 0;
+        if (target_position > MAX_POSITION_LIMIT) target_position = MAX_POSITION_LIMIT;
+
         // ----------------------------------------------------------------
         // UPDATE MOTOR PROFILE AND POSITION
         // ----------------------------------------------------------------
@@ -604,19 +624,15 @@ void loop() {
     }
 
     // ========================================================================
-    // READ CURRENT MOTOR POSITION AND STATUS
-    // ========================================================================
-    int32_t present_position = dxl.getPresentPosition(DXL_ID);
-    int32_t present_velocity = dxl.getPresentVelocity(DXL_ID);
-    uint8_t moving_status = dxl.readControlTableItem(ADDR_MOVING, DXL_ID);
-    uint8_t torque_status = dxl.readControlTableItem(ADDR_TORQUE_ENABLE, DXL_ID);
-
-    // ========================================================================
-    // DISPLAY INFO - Update only every 200ms to reduce flicker
+    // DISPLAY INFO - Update only every 100ms to reduce flicker
     // ========================================================================
     static unsigned long last_display_update = 0;
-    if (millis() - last_display_update > 200) {
+    if (millis() - last_display_update > 100) {
         last_display_update = millis();
+
+        // Read current motor status for display
+        int32_t present_position = dxl.getPresentPosition(DXL_ID);
+        int32_t present_velocity = dxl.getPresentVelocity(DXL_ID);
 
         if (!switch_status) {
             // MANUAL MODE - Clean display
@@ -627,15 +643,13 @@ void loop() {
             M5.Display.printf("Position: %d          ", present_position);
 
             M5.Display.setCursor(10, 160);
-            M5.Display.printf("Velocity: %d          ", current_velocity);
+            M5.Display.printf("Velocity: %d (CH2:%ld)     ", current_velocity, encoder_ch2_value);
 
             M5.Display.setCursor(10, 190);
-            M5.Display.printf("Moving: %s  Torque: %s    ",
-                              moving_status ? "YES" : "NO ",
-                              torque_status ? "ON " : "OFF");
+            M5.Display.printf("Accel: %d (CH3:%ld)       ", current_acceleration, encoder_ch3_value);
 
             M5.Display.setCursor(10, 220);
-            M5.Display.printf("Encoder: %ld          ", encoder_ch1_value);
+            M5.Display.printf("Encoder CH1: %ld          ", encoder_ch1_value);
 
     } else {
         // AUTO MODE DISPLAY
