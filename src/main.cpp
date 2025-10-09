@@ -65,18 +65,22 @@ int direction_multiplier = -1;      // Direction: 1 = FWD, -1 = REV
 // Auto mode control variables
 unsigned long cycle_start_time = 0;     // When current cycle started
 bool auto_mode_active = false;          // Track if we're in auto mode
-int saved_cycle_time = 5000;            // Remember cycle time when switching modes (default: 5000ms)
+int saved_cycle_time = 3000;            // Remember cycle time when switching modes (default: 5000ms)
 bool use_encoder_control = false;       // Flag: use encoder values or keep defaults
 
+// Power scaling factor: maps user range (0-2000) to motor capability
+// 0.5 = 50% of max motor power (max 32767), 1.0 = 100% of motor power
+const float POWER_SCALE = 0.5;          // Adjust this to increase/decrease max power
+
 // Auto mode parameters (controllable via encoders)
-int auto_cycle_time = 5000;             // Total cycle time (ms) - CH1 - Default: 5000ms
+int auto_cycle_time = 3000;             // Total cycle time (ms) - CH1 - Default: 5000ms
 int auto_push_velocity = 1000;          // Fast push velocity (500-2000) - CH2 - Default: 1000
 int auto_push_acceleration = 330;       // Fast push acceleration (100-5000) - CH3 - Default: 330
 int auto_return_velocity = 100;         // Slow return velocity (50-500) - CH4
 int auto_return_acceleration = 100;     // Slow return acceleration (10-1000) - CH5
 int auto_push_ratio = 33;               // Push time as % of cycle (5-90%) - CH6 - Default: 33%
 int auto_direction_swap = -1;           // Direction multiplier: 1=normal, -1=swapped - CH7
-int auto_stroke_range = 2964;           // Stroke range in units (±260°) - CH8 - Default: 2964 (260°)
+int auto_stroke_range = 512;           // Stroke range in units (±45°) - CH8 - Default: 512 (45°)
 
 // ============================================================================
 // SETUP - Runs once when M5Stack starts
@@ -153,10 +157,19 @@ void setup() {
             M5.Display.setCursor(10, 20);
             M5.Display.printf("Encoder OK! (try %d)    ", retry + 1);
 
-            // Reset all encoder counters to clear any stuck state
-            for (int ch = 0; ch < 8; ch++) {
-                encoder.resetCounter(ch);
+            // Reset all encoder counters MULTIPLE TIMES to clear any stuck state after power cycle
+            for (int reset_attempt = 0; reset_attempt < 5; reset_attempt++) {
+                for (int ch = 0; ch < 8; ch++) {
+                    encoder.resetCounter(ch);
+                }
+                delay(50);  // Small delay between reset attempts
             }
+
+            // Verify CH1 is actually 0
+            delay(100);
+            int32_t ch1_check = encoder.getEncoderValue(0);
+            M5.Display.setCursor(10, 40);
+            M5.Display.printf("CH1 value: %ld        ", ch1_check);
 
             encoder_found = true;
             break;  // Success - exit retry loop
@@ -256,15 +269,7 @@ void setup() {
         if (torque_check == 1) {
             M5.Display.println("Ready! Torque ON");
             dxl.ledOn(DXL_ID);
-
-            // Reset encoder to 0 on startup (if encoder is connected)
-            if (encoder_found) {
-                for (int ch = 0; ch < 8; ch++) {
-                    encoder.resetCounter(ch);
-                }
-                M5.Display.setCursor(10, 130);
-                M5.Display.println("Encoder reset to 0");
-            }
+            // Encoder already reset during initialization
         } else {
             M5.Display.println("ERROR: Torque OFF!");
             M5.Display.setCursor(10, 130);
@@ -298,11 +303,11 @@ void loop() {
     // SAFE MODE - Run default auto mode if encoder not found
     // ========================================================================
     if (!encoder_found) {
-        // Force auto mode on with default settings (±260° for XW540)
+        // Force auto mode on with default settings (±45° for XW540)
         if (!auto_mode_active) {
             auto_mode_active = true;
             cycle_start_time = millis();
-            auto_stroke_range = 2964;  // ±260 degrees (2964 units)
+            auto_stroke_range = 512;  // ±45 degrees (512 units)
         }
 
         // Calculate cycle timing
@@ -409,6 +414,9 @@ void loop() {
 
             // Reset encoder to 0 when entering manual mode (avoids huge values)
             encoder.setEncoderValue(0, 0);
+
+            // Disable encoder control so auto mode uses defaults when returning
+            use_encoder_control = false;
         }
 
         // ----------------------------------------------------------------
@@ -502,41 +510,44 @@ void loop() {
         // ----------------------------------------------------------------
         // ENCODER CONTROLS FOR AUTO MODE
         // ----------------------------------------------------------------
-        // Enable encoder control if any encoder has been touched
+        // Enable encoder control if any AUTO MODE encoder has been touched
+        // NOTE: Exclude CH1 because it's used for manual position control
         if (!use_encoder_control) {
-            // Check if any encoder has moved from zero
-            if (abs(encoder_ch1_value) > 0 || abs(encoder_ch2_value) > 0 ||
-                abs(encoder_ch3_value) > 0 || abs(encoder_ch4_value) > 0 ||
-                abs(encoder_ch5_value) > 0 || abs(encoder_ch6_value) > 0 ||
-                abs(encoder_ch7_value) > 0) {
+            // Check if any encoder (CH2-CH7) has moved from zero
+            if (abs(encoder_ch2_value) > 0 || abs(encoder_ch3_value) > 0 ||
+                abs(encoder_ch4_value) > 0 || abs(encoder_ch5_value) > 0 ||
+                abs(encoder_ch6_value) > 0 || abs(encoder_ch7_value) > 0) {
                 use_encoder_control = true;  // User has touched an encoder, start using encoder values
             }
         }
 
         // Only update from encoders if they've been touched, otherwise use defaults
         if (use_encoder_control) {
-            // CH1: CYCLE TIME (2000-5000ms)
-            auto_cycle_time = 2000 + (abs(encoder_ch1_value) * 50);
-            if (auto_cycle_time > 5000) auto_cycle_time = 5000;
+            // NOTE: CH1 is NOT used in auto mode (reserved for manual position control)
+            // Cycle time stays at default or last saved value
 
-            // CH2: PUSH VELOCITY (500-2000)
-            auto_push_velocity = 500 + (abs(encoder_ch2_value) * 2.5);
-            if (auto_push_velocity > 2000) auto_push_velocity = 2000;
+            // CH2: PUSH VELOCITY (200-2000 user range, scaled to motor capability)
+            int user_push_velocity = 200 + (abs(encoder_ch2_value) * 2.5);
+            if (user_push_velocity > 2000) user_push_velocity = 2000;
+            auto_push_velocity = (int)(user_push_velocity * POWER_SCALE * 32767 / 2000);
 
-            // CH3: PUSH ACCELERATION (100-5000)
-            auto_push_acceleration = 100 + (abs(encoder_ch3_value) * 2.5);
-            if (auto_push_acceleration > 5000) auto_push_acceleration = 5000;
+            // CH3: PUSH ACCELERATION (100-2000 user range, scaled to motor capability)
+            int user_push_acceleration = 100 + (abs(encoder_ch3_value) * 2.5);
+            if (user_push_acceleration > 2000) user_push_acceleration = 2000;
+            auto_push_acceleration = (int)(user_push_acceleration * POWER_SCALE * 32767 / 2000);
 
-            // CH4: RETURN VELOCITY (50-500)
-            auto_return_velocity = 50 + (abs(encoder_ch4_value) * 2.5);
-            if (auto_return_velocity > 500) auto_return_velocity = 500;
+            // CH4: RETURN VELOCITY (200-2000 user range, scaled to motor capability)
+            int user_return_velocity = 200 + (abs(encoder_ch4_value) * 2.5);
+            if (user_return_velocity > 2000) user_return_velocity = 2000;
+            auto_return_velocity = (int)(user_return_velocity * POWER_SCALE * 32767 / 2000);
 
-            // CH5: RETURN ACCELERATION (10-1000)
-            auto_return_acceleration = 10 + (abs(encoder_ch5_value) * 2.5);
-            if (auto_return_acceleration > 1000) auto_return_acceleration = 1000;
+            // CH5: RETURN ACCELERATION (100-2000 user range, scaled to motor capability)
+            int user_return_acceleration = 100 + (abs(encoder_ch5_value) * 2.5);
+            if (user_return_acceleration > 2000) user_return_acceleration = 2000;
+            auto_return_acceleration = (int)(user_return_acceleration * POWER_SCALE * 32767 / 2000);
 
             // CH6: PUSH/RETURN RATIO (45-90%)
-            auto_push_ratio = 5 + (abs(encoder_ch6_value) * 2);
+            auto_push_ratio = 10 + (abs(encoder_ch6_value) * 2);
             if (auto_push_ratio > 90) auto_push_ratio = 90;
             if (auto_push_ratio < 5) auto_push_ratio = 5;
 
@@ -545,10 +556,14 @@ void loop() {
             if (auto_stroke_range > MAX_POSITION_LIMIT) auto_stroke_range = MAX_POSITION_LIMIT;
         }
 
-        // Button: Reset to default (always check)
+        // CH1 Button: Reset all encoders to restore defaults
         static bool last_ch1_button = false;
         if (encoder_ch1_button && !last_ch1_button) {
-            encoder.resetCounter(0);  // Reset encoder to 0
+            // Reset all encoder channels to return to default settings
+            for (int ch = 0; ch < 8; ch++) {
+                encoder.resetCounter(ch);
+            }
+            use_encoder_control = false;  // Return to using defaults
         }
         last_ch1_button = encoder_ch1_button;
 
