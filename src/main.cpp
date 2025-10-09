@@ -524,10 +524,9 @@ void loop() {
         // ENCODER CONTROLS FOR AUTO MODE
         // ----------------------------------------------------------------
         // Enable encoder control if any AUTO MODE encoder has been touched
-        // NOTE: Exclude CH1 because it's used for manual position control
         if (!use_encoder_control) {
-            // Check if any encoder (CH2-CH7) has moved from zero
-            if (abs(encoder_ch2_value) > 0 || abs(encoder_ch3_value) > 0 ||
+            // Check if any encoder (CH1-CH7) has moved from zero
+            if (abs(encoder_ch1_value) > 0 || abs(encoder_ch2_value) > 0 || abs(encoder_ch3_value) > 0 ||
                 abs(encoder_ch4_value) > 0 || abs(encoder_ch5_value) > 0 ||
                 abs(encoder_ch6_value) > 0 || abs(encoder_ch7_value) > 0) {
                 use_encoder_control = true;  // User has touched an encoder, start using encoder values
@@ -536,8 +535,10 @@ void loop() {
 
         // Only update from encoders if they've been touched, otherwise use defaults
         if (use_encoder_control) {
-            // NOTE: CH1 is NOT used in auto mode (reserved for manual position control)
-            // Cycle time stays at default or last saved value
+            // CH1: CYCLE TIME (1000-8000ms range)
+            auto_cycle_time = 3000 + (encoder_ch1_value * 25);  // 25ms per encoder click
+            if (auto_cycle_time < 1000) auto_cycle_time = 1000;
+            if (auto_cycle_time > 8000) auto_cycle_time = 8000;
 
             // CH2: PUSH VELOCITY (200-2000 user range, scaled to motor capability)
             int user_push_velocity = 200 + (abs(encoder_ch2_value) * 2.5);
@@ -564,9 +565,10 @@ void loop() {
             if (auto_push_ratio > 90) auto_push_ratio = 90;
             if (auto_push_ratio < 5) auto_push_ratio = 5;
 
-            // CH7: STROKE RANGE (512-4914 units, 45-432°, up to 1.2 rotations)
+            // CH7: STROKE RANGE (512-2730 units, 45-240°, hard limit at ±240°)
             auto_stroke_range = 512 + abs(encoder_ch7_value) * 12;
-            if (auto_stroke_range > MAX_POSITION_LIMIT) auto_stroke_range = MAX_POSITION_LIMIT;
+            const int MAX_STROKE_LIMIT = 2730;  // 240 degrees = (240 * 4095 / 360)
+            if (auto_stroke_range > MAX_STROKE_LIMIT) auto_stroke_range = MAX_STROKE_LIMIT;
         }
 
         // CH1 Button: Reset all encoders to restore defaults
@@ -679,6 +681,17 @@ void loop() {
             M5.Display.setCursor(10, 200);
             M5.Display.printf("Encoder CH1: %ld          ", encoder_ch1_value);
 
+            M5.Display.setCursor(10, 230);
+            if (encoder_ch1_value == -44) {
+                M5.Display.printf("INSERT RACK | MIN!!!!!      ");
+            } else if (encoder_ch1_value < -44 ) {
+                M5.Display.printf("DO NOT INSERT RACK     ");
+            } else if (encoder_ch1_value == 0) {
+                M5.Display.printf("START POINT / HARD LIMIT     ");
+            } else {
+                M5.Display.printf("                             ");
+            }
+
     } else {
         // AUTO MODE DISPLAY
         unsigned long current_time = millis();
@@ -724,8 +737,8 @@ void loop() {
         }
 
         M5.Display.setCursor(10, 160);
-        M5.Display.printf("Cycle:%dms R:%d/%d%% +-%ddeg",
-                          auto_cycle_time, auto_push_ratio, 100-auto_push_ratio, stroke_angle);
+        M5.Display.printf("Cycle:%dms(%ld) R:%d/%d%%",
+                          auto_cycle_time, encoder_ch1_value, auto_push_ratio, 100-auto_push_ratio);
 
         M5.Display.setCursor(10, 180);
         M5.Display.printf("Push: V=%d(%ld) A=%d(%ld)    ",
@@ -737,8 +750,12 @@ void loop() {
                           auto_return_velocity, encoder_ch4_value,
                           auto_return_acceleration, encoder_ch5_value);
 
-        // M5.Display.setCursor(10, 220);
-        // M5.Display.printf("Goal:%d", present_position);
+        M5.Display.setCursor(10, 220);
+        if (stroke_angle >= 240) {
+            M5.Display.printf("LIMIT: +-%d deg (MAX)     ", stroke_angle);
+        } else {
+            M5.Display.printf("Range: +-%d deg          ", stroke_angle);
+        }
         }
     }
 
