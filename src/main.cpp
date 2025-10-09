@@ -27,14 +27,20 @@
 // ============================================================================
 const uint8_t DXL_ID = 1;                    // Motor ID (set in motor, default 1)
 const float DXL_PROTOCOL_VERSION = 2.0;      // Protocol 2.0 for XL430
-const uint32_t DXL_BAUD_RATE = 1000000;      // Communication speed (bits/second)
+const uint32_t DXL_BAUD_RATE = 57600;      // Communication speed (bits/second)
                                              // RS485 supports: 9600, 57600, 115200, 1000000, etc.
-                                             // 1000000 = 1 Mbps (modern Dynamixel default)
+                                             // 1000000 = 1 Mbps (modern Dynamixel default) Dynamixel XL430 W250-T
+                                             // 57600 = 1 Mbps (modern Dynamixel default) Dynamixel XL430 W250-T
                                              // Your motor is configured to 1000000 baud
 
 // Create Dynamixel controller object
 // This handles all the complex packet formatting and RS485 communication
 Dynamixel2Arduino dxl(DXL_SERIAL, DXL_DIR_PIN);
+
+// Control Table Addresses for XW540 (Protocol 2.0)
+#define ADDR_TORQUE_ENABLE 64
+#define ADDR_HARDWARE_ERROR_STATUS 70
+#define ADDR_MOVING 122
 
 // ============================================================================
 // ENCODER SETUP - M5Stack 8-Encoder Unit
@@ -46,7 +52,7 @@ UNIT_8ENCODER encoder;           // Create encoder object
 // MOTION CONTROL VARIABLES
 // ============================================================================
 bool encoder_found = false;        // Flag: encoder detected and working?
-const int MAX_POSITION = 4095;     // XL430 position range: 0-4095 (0-360 degrees)
+const int MAX_POSITION = 4095;     // XW540-T260-R position range: 4095 (0-360 degrees) - SAME as XL430!
                                    // 0 = 0°, 2048 = 180°, 4095 = 360°
 const int ENCODER_COUNTS_PER_REV = 60;  // Encoder counts per full rotation
 
@@ -69,27 +75,22 @@ int auto_return_velocity = 100;         // Slow return velocity (50-500) - CH4
 int auto_return_acceleration = 100;     // Slow return acceleration (10-1000) - CH5
 int auto_push_ratio = 50;               // Push time as % of cycle (10-90%) - CH6
 int auto_direction_swap = 1;            // Direction multiplier: 1=normal, -1=swapped - CH7
-int auto_stroke_range = 1024;           // Stroke range in units (±90°) - CH8
+int auto_stroke_range = 1024;           // Stroke range in units (±90°) - CH8 (4096/4 = 1024 = 90deg)
 
 // ============================================================================
 // SETUP - Runs once when M5Stack starts
 // ============================================================================
 void setup() {
-    // ========================================================================
-    // INITIALIZE I2C FOR ENCODER FIRST (before M5Stack)
-    // ========================================================================
-    // This needs to happen early to avoid conflicts
-    // M5Stack CoreS3 Port.A: SDA=GPIO2, SCL=GPIO1
-
-    // Wait for power to stabilize
-    //delay(2000);  // Longer initial delay
-
-    // ========================================================================
-    // AGGRESSIVE I2C BUS CLEANUP ON STARTUP
-    // ========================================================================
+    // Initialize M5Stack hardware AFTER I2C cleanup
+    auto cfg = M5.config();
+    M5.begin(cfg);
+    M5.Power.setExtOutput(true);  // turn on Grove 5V, 
+    delay(300);                   // wait a bit
+    //3) Start I2C on Port A (SDA=GPIO2, SCL=GPIO1)
     // Send multiple reset attempts to clear any stuck state on I2C devices
     for (int i = 0; i < 3; i++) {
         Wire.begin(2, 1);
+        encoder.begin(&Wire, 0x41, 2, 1);
         // delay(100);
 
         // Send general call reset to all I2C devices
@@ -111,9 +112,7 @@ void setup() {
     Wire.begin(2, 1);
     // delay(100);
 
-    // Initialize M5Stack hardware AFTER I2C cleanup
-    auto cfg = M5.config();
-    M5.begin(cfg);
+
 
     // Setup display
     M5.Display.clear();
@@ -174,7 +173,7 @@ void setup() {
         M5.Display.setCursor(10, 50);
         M5.Display.println("Entering SAFE MODE...");
         M5.Display.setCursor(10, 70);
-        M5.Display.println("Motor: Auto +/-90deg");
+        M5.Display.println("Motor: Auto +/-180deg");
         M5.Display.setCursor(10, 90);
         M5.Display.println("No manual control");
         delay(3000);
@@ -207,26 +206,72 @@ void setup() {
         M5.Display.setCursor(10, 50);
         M5.Display.println("Motor FOUND!");
 
-        // Configure motor for EXTENDED position control mode (multi-turn)
-        dxl.torqueOff(DXL_ID);                        // Turn off torque (motor can move freely)
-        dxl.setOperatingMode(DXL_ID, OP_EXTENDED_POSITION);  // Extended position = unlimited rotations
+        // Read and display motor model
+        uint16_t model = dxl.getModelNumber(DXL_ID);
+        M5.Display.setCursor(10, 70);
+        M5.Display.printf("Model: %d ", model);
+        if (model == 1180) {
+            M5.Display.println("(XW540)");
+        } else if (model == 1060) {
+            M5.Display.println("(XL430)");
+        }
 
-        // Set initial motion profile
-        // We'll update these in loop() based on encoder values
-        current_velocity = 300;          // Initial velocity
-        current_acceleration = 100;      // Initial acceleration
+        // Check hardware errors BEFORE configuration
+        uint8_t hw_error = dxl.readControlTableItem(ADDR_HARDWARE_ERROR_STATUS, DXL_ID);
+        M5.Display.setCursor(10, 90);
+        if (hw_error != 0) {
+            M5.Display.printf("HW ERROR: 0x%02X!", hw_error);
+            delay(2000);
+        } else {
+            M5.Display.println("No errors");
+        }
+
+        // Configure motor - turn off torque first
+        dxl.torqueOff(DXL_ID);
+        delay(100);
+
+        dxl.setOperatingMode(DXL_ID, OP_EXTENDED_POSITION);
+        delay(100);
+
+        // Set motion profile
+        current_velocity = 300;
+        current_acceleration = 100;
         dxl.setProfileVelocity(DXL_ID, current_velocity);
         dxl.setProfileAcceleration(DXL_ID, current_acceleration);
+        delay(100);
 
-        dxl.torqueOn(DXL_ID);                         // Turn on torque (motor locked to position)
+        // Enable torque - try both methods
+        dxl.torqueOn(DXL_ID);
+        delay(50);
+        // Also try direct write to control table
+        dxl.writeControlTableItem(ADDR_TORQUE_ENABLE, DXL_ID, 1);
+        delay(100);
 
+        // Verify
+        uint8_t torque_check = dxl.readControlTableItem(ADDR_TORQUE_ENABLE, DXL_ID);
+        M5.Display.setCursor(10, 110);
 
-        M5.Display.setCursor(10, 70);
-        M5.Display.println("Torque ON");
+        if (torque_check == 1) {
+            M5.Display.println("Ready! Torque ON");
+            dxl.ledOn(DXL_ID);
+        } else {
+            M5.Display.println("ERROR: Torque OFF!");
+            M5.Display.setCursor(10, 130);
+            M5.Display.println("Motor may be moving");
+            M5.Display.setCursor(10, 150);
+            M5.Display.println("or has HW error");
+        }
     } else {
         M5.Display.setCursor(10, 50);
         M5.Display.println("Motor NOT found!");
-        // Check: wiring, power, baud rate, motor ID
+        M5.Display.setCursor(10, 70);
+        M5.Display.println("Check:");
+        M5.Display.setCursor(10, 90);
+        M5.Display.println("- Power (12V)");
+        M5.Display.setCursor(10, 110);
+        M5.Display.println("- Wiring (A/B)");
+        M5.Display.setCursor(10, 130);
+        M5.Display.println("- Baud: 57600");
     }
 
     delay(1000);  // Wait 1 second before starting loop
@@ -242,11 +287,11 @@ void loop() {
     // SAFE MODE - Run default auto mode if encoder not found
     // ========================================================================
     if (!encoder_found) {
-        // Force auto mode on with default settings (±90° = 1024 units)
+        // Force auto mode on with default settings (±180° for XW540)
         if (!auto_mode_active) {
             auto_mode_active = true;
             cycle_start_time = millis();
-            auto_stroke_range = 1024;  // ±90 degrees
+            auto_stroke_range = 2048;  // ±180 degrees (4096/2 = 2048)
         }
 
         // Calculate cycle timing
@@ -285,14 +330,22 @@ void loop() {
         // Send target position
         dxl.setGoalPosition(DXL_ID, target_position);
 
-        // Display safe mode info
+        // Display safe mode info with DEBUG
         int32_t present_position = dxl.getPresentPosition(DXL_ID);
+        int32_t present_velocity = dxl.getPresentVelocity(DXL_ID);
+        uint8_t moving_status = dxl.readControlTableItem(ADDR_MOVING, DXL_ID);
+
+        M5.Display.fillRect(0, 100, 320, 140, BLACK);  // Clear display area
         M5.Display.setCursor(10, 100);
-        M5.Display.println("=== SAFE MODE ===");
+        M5.Display.println("=== SAFE MODE (AUTO) ===");
         M5.Display.setCursor(10, 120);
-        M5.Display.printf("Auto: +-%ddeg        ", (auto_stroke_range * 360) / 4096);
+        M5.Display.printf("Target: %d (+-%ddeg)", target_position, (auto_stroke_range * 360) / MAX_POSITION);
         M5.Display.setCursor(10, 140);
-        M5.Display.printf("Motor: %d          ", present_position);
+        M5.Display.printf("Current: %d", present_position);
+        M5.Display.setCursor(10, 160);
+        M5.Display.printf("Vel: %d  Move: %s", present_velocity, moving_status ? "YES" : "NO");
+        M5.Display.setCursor(10, 180);
+        M5.Display.printf("V:%d A:%d", target_velocity, target_acceleration);
 
         delay(1000/120.);
         return;  // Skip normal encoder-based control
@@ -551,26 +604,38 @@ void loop() {
     }
 
     // ========================================================================
-    // READ CURRENT MOTOR POSITION
+    // READ CURRENT MOTOR POSITION AND STATUS
     // ========================================================================
     int32_t present_position = dxl.getPresentPosition(DXL_ID);
-    // ========================================================================
-    // DISPLAY INFO
-    // ========================================================================
-    if (!switch_status) {
-        // MANUAL MODE DISPLAY
-        M5.Display.setCursor(10, 100);
-        M5.Display.printf("Mode: MANUAL  Dir: %s    ",
-                          direction_multiplier == 1 ? "FWD" : "REV");
+    int32_t present_velocity = dxl.getPresentVelocity(DXL_ID);
+    uint8_t moving_status = dxl.readControlTableItem(ADDR_MOVING, DXL_ID);
+    uint8_t torque_status = dxl.readControlTableItem(ADDR_TORQUE_ENABLE, DXL_ID);
 
-        M5.Display.setCursor(10, 120);
-        M5.Display.printf("CH1 Pos: %ld    ", encoder_ch1_value);
-        M5.Display.setCursor(10, 140);
-        M5.Display.printf("CH2 Vel: %d (raw:%ld)  ", current_velocity, encoder_ch2_value);
-        M5.Display.setCursor(10, 160);
-        M5.Display.printf("CH3 Acc: %d (raw:%ld)  ", current_acceleration, encoder_ch3_value);
-        M5.Display.setCursor(10, 180);
-        M5.Display.printf("Motor Pos: %d    ", present_position);
+    // ========================================================================
+    // DISPLAY INFO - Update only every 200ms to reduce flicker
+    // ========================================================================
+    static unsigned long last_display_update = 0;
+    if (millis() - last_display_update > 200) {
+        last_display_update = millis();
+
+        if (!switch_status) {
+            // MANUAL MODE - Clean display
+            M5.Display.setCursor(10, 100);
+            M5.Display.printf("=== MANUAL MODE ===      ");
+
+            M5.Display.setCursor(10, 130);
+            M5.Display.printf("Position: %d          ", present_position);
+
+            M5.Display.setCursor(10, 160);
+            M5.Display.printf("Velocity: %d          ", current_velocity);
+
+            M5.Display.setCursor(10, 190);
+            M5.Display.printf("Moving: %s  Torque: %s    ",
+                              moving_status ? "YES" : "NO ",
+                              torque_status ? "ON " : "OFF");
+
+            M5.Display.setCursor(10, 220);
+            M5.Display.printf("Encoder: %ld          ", encoder_ch1_value);
 
     } else {
         // AUTO MODE DISPLAY
@@ -580,7 +645,7 @@ void loop() {
         int cycle_progress = (time_in_cycle * 100) / auto_cycle_time;
 
         int push_time = (auto_cycle_time * auto_push_ratio) / 100;
-        int stroke_angle = (auto_stroke_range * 360) / 4096;  // Convert to degrees
+        int stroke_angle = (auto_stroke_range * 360) / MAX_POSITION;  // Convert to degrees
 
         M5.Display.setCursor(10, 100);
         M5.Display.println("=== AUTO MODE ===");
@@ -632,6 +697,7 @@ void loop() {
 
         M5.Display.setCursor(10, 220);
         M5.Display.printf("Motor: %d   ", present_position);
+        }
     }
 
     delay(1000/120.);  // Update 120 times per second
