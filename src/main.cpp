@@ -27,7 +27,8 @@
 // ============================================================================
 const uint8_t DXL_ID = 1;                    // Motor ID (set in motor, default 1)
 const float DXL_PROTOCOL_VERSION = 2.0;      // Protocol 2.0 for XL430
-const uint32_t DXL_BAUD_RATE = 57600;      // Communication speed (bits/second)
+//const uint32_t DXL_BAUD_RATE = 1000000;      // Communication speed (bits/second)
+const uint32_t DXL_BAUD_RATE = 57600;
                                              // RS485 supports: 9600, 57600, 115200, 1000000, etc.
                                              // 1000000 = 1 Mbps (modern Dynamixel default) Dynamixel XL430 W250-T
                                              // 57600 = 1 Mbps (modern Dynamixel default) Dynamixel XL430 W250-T
@@ -53,9 +54,11 @@ UNIT_8ENCODER encoder;           // Create encoder object
 // ============================================================================
 bool encoder_found = false;        // Flag: encoder detected and working?
 const int MAX_POSITION = 4095;     // XW540-T260-R: 4095 = 360° (one full rotation)
-const int MAX_POSITION_LIMIT = 4914;  // Allow 1.2 rotations (4095 × 1.2 = 4914)
-                                   // 0 = 0°, 2048 = 180°, 4095 = 360°, 4914 = 432°
-const int ENCODER_COUNTS_PER_REV = 60;  // Encoder counts per full rotation
+const int CENTER_POSITION = 2048;  // Center position (180°) - safe starting point
+const int MAX_POSITION_LIMIT = 4095;  // Hard limit: never exceed one full rotation
+                                   // 0 = 0°, 2048 = 180°, 4095 = 360°
+const int ENCODER_CH1_RANGE = 22;  // CH1 encoder range: -22 to +22 (44 clicks total, safety limited)
+const int POSITION_SCALE = 68;     // Scale factor: 4095/60 ≈ 68 (same scale as ±30, just limited range)
 
 // Manual mode control variables
 int current_velocity = 0;          // Track current velocity setting
@@ -293,12 +296,38 @@ void setup() {
         M5.Display.println("- Baud: 57600");
     }
 
-    // System ready - encoders have been reset to 0
-    // Runtime safety clamp will protect against dangerous values
+    // ========================================================================
+    // HOMING: Move motor to center position (2048) if outside safe range
+    // ========================================================================
     if (encoder_found) {
+        int32_t current_position = dxl.getPresentPosition(DXL_ID);
+
         M5.Display.setCursor(10, 155);
-        M5.Display.println("Ready! Encoders at 0");
-        delay(1000);
+        M5.Display.printf("Current Pos: %ld", current_position);
+        delay(500);
+
+        // Check if position is outside safe range (0-4095)
+        if (current_position < 0 || current_position > MAX_POSITION_LIMIT) {
+            M5.Display.setCursor(10, 185);
+            M5.Display.println("OUT OF RANGE! Homing...");
+
+            // Home to center position (2048)
+            dxl.setGoalPosition(DXL_ID, CENTER_POSITION);
+            delay(3000);  // Wait for motor to reach center
+
+            M5.Display.setCursor(10, 185);
+            M5.Display.println("Homed to center (2048)");
+            delay(1000);
+        } else {
+            M5.Display.setCursor(10, 175);
+            M5.Display.println("Position OK, no homing needed");
+            delay(1000);
+        }
+
+        // Encoder CH1 is already at 0 (represents center position 2048)
+        M5.Display.setCursor(10, 215);
+        M5.Display.println("Ready! CH1=0 = Pos 2048");
+        delay(1500);
     }
 }
 
@@ -318,10 +347,8 @@ void loop() {
             cycle_start_time = millis();
             auto_stroke_range = 512;  // ±45 degrees (512 units)
 
-            // Capture current motor position as center point for safe mode too
-            auto_mode_center_position = dxl.getPresentPosition(DXL_ID);
-            if (auto_mode_center_position < 0) auto_mode_center_position = 0;
-            if (auto_mode_center_position > MAX_POSITION_LIMIT) auto_mode_center_position = MAX_POSITION_LIMIT;
+            // Always center at 2048 in safe mode too
+            auto_mode_center_position = CENTER_POSITION;
         }
 
         // Calculate cycle timing
@@ -347,7 +374,7 @@ void loop() {
             target_acceleration = auto_return_acceleration;
         }
 
-        // Limit to valid range (0-4914, allowing 1.2 rotations)
+        // Limit to valid range (0-4095, one full rotation max)
         if (target_position < 0) target_position = 0;
         if (target_position > MAX_POSITION_LIMIT) target_position = MAX_POSITION_LIMIT;
 
@@ -441,36 +468,40 @@ void loop() {
             // Toggle direction
             direction_multiplier *= -1;
 
-            // Calculate what encoder value would maintain current motor position with new direction
-            // Use same formula as startup sync
-            int32_t new_encoder_value = (current_motor_position * ENCODER_COUNTS_PER_REV * direction_multiplier) / MAX_POSITION;
+            // Calculate encoder value to maintain position with new direction
+            // Solve: position = CENTER + (CH1 * SCALE * direction)
+            // CH1 = (position - CENTER) / (SCALE * direction)
+            int32_t new_encoder_value = (current_motor_position - CENTER_POSITION) / (POSITION_SCALE * direction_multiplier);
 
             // Set encoder to this new value to maintain motor position
             encoder.setEncoderValue(0, new_encoder_value);
 
-            // Send current position immediately to prevent movement
-            // dxl.setGoalPosition(DXL_ID, current_motor_position);
             direction_just_changed = true;
         }
         last_ch4_button = encoder_ch4_button;
 
         // ----------------------------------------------------------------
-        // OPTION B: RUNTIME SAFETY CLAMP FOR CH1
+        // RUNTIME SAFETY CLAMP FOR CH1
         // ----------------------------------------------------------------
-        // Safety check: If CH1 has dangerous value (like -961), reset it immediately
-        // Normal range is 0 to -44, so anything beyond ±100 is suspicious
-        if (encoder_ch1_value < -100 || encoder_ch1_value > 100) {
-            // Dangerous value detected! Reset to safe position
-            encoder.setEncoderValue(0, 0);
-            encoder_ch1_value = 0;  // Use safe value this loop iteration
+        // Safety check: Limit CH1 to ±22 range
+        if (encoder_ch1_value < -ENCODER_CH1_RANGE) {
+            encoder.setEncoderValue(0, -ENCODER_CH1_RANGE);
+            encoder_ch1_value = -ENCODER_CH1_RANGE;
+        } else if (encoder_ch1_value > ENCODER_CH1_RANGE) {
+            encoder.setEncoderValue(0, ENCODER_CH1_RANGE);
+            encoder_ch1_value = ENCODER_CH1_RANGE;
         }
 
         // ----------------------------------------------------------------
-        // ENCODER CH1: POSITION CONTROL
+        // ENCODER CH1: POSITION CONTROL (centered at 2048)
         // ----------------------------------------------------------------
-        int position = (-encoder_ch1_value * MAX_POSITION * direction_multiplier) / ENCODER_COUNTS_PER_REV;
+        // Formula: position = 2048 + (CH1 * 68 * direction)
+        // CH1=-22 → position ≈ 552 (safety margin from 0)
+        // CH1=0   → position = 2048 (center)
+        // CH1=+22 → position ≈ 3544 (safety margin from 4095)
+        int position = CENTER_POSITION + (encoder_ch1_value * POSITION_SCALE * direction_multiplier);
 
-        // Limit position to valid range (0-4914, allowing 1.2 rotations)
+        // Hard limit to prevent wrap-around (CRITICAL SAFETY!)
         if (position < 0) position = 0;
         if (position > MAX_POSITION_LIMIT) position = MAX_POSITION_LIMIT;
 
@@ -526,13 +557,9 @@ void loop() {
             // Keep encoder values preserved when switching modes
             // (encoders are NOT reset, parameters persist across mode switches)
 
-            // CRITICAL: Capture current motor position as center point
-            // This prevents dangerous 360° rotation when entering auto mode!
-            auto_mode_center_position = dxl.getPresentPosition(DXL_ID);
-
-            // Safety: Clamp center position to valid range
-            if (auto_mode_center_position < 0) auto_mode_center_position = 0;
-            if (auto_mode_center_position > MAX_POSITION_LIMIT) auto_mode_center_position = MAX_POSITION_LIMIT;
+            // CRITICAL: Always center auto mode at 2048 (center position)
+            // This prevents dangerous wrap-around at 0/4095 boundary
+            auto_mode_center_position = CENTER_POSITION;
 
             // Start cycle timing from current position (no homing)
             cycle_start_time = millis();
@@ -576,9 +603,9 @@ void loop() {
             if (auto_push_ratio > 90) auto_push_ratio = 90;
             if (auto_push_ratio < 5) auto_push_ratio = 5;
 
-            // CH7: STROKE RANGE (adjust from default 512 units/45°, range: 512-2730 units/45-240°)
+            // CH7: STROKE RANGE (adjust from default 512 units/45°, range: 512-2048 units/45-180°)
             auto_stroke_range = 512 + (encoder_ch7_value * 12);
-            const int MAX_STROKE_LIMIT = 2730;  // 240 degrees = (240 * 4095 / 360)
+            const int MAX_STROKE_LIMIT = 2048;  // Maximum 2048 to prevent exceeding 0-4095 range when centered at 2048
             if (auto_stroke_range > MAX_STROKE_LIMIT) auto_stroke_range = MAX_STROKE_LIMIT;
             if (auto_stroke_range < 512) auto_stroke_range = 512;
         }
@@ -645,7 +672,7 @@ void loop() {
             target_acceleration = auto_return_acceleration;
         }
 
-        // Limit to valid range (0-4914, allowing 1.2 rotations)
+        // Limit to valid range (0-4095, one full rotation max)
         if (target_position < 0) target_position = 0;
         if (target_position > MAX_POSITION_LIMIT) target_position = MAX_POSITION_LIMIT;
 
@@ -686,7 +713,7 @@ void loop() {
             // M5.Display.setCursor(10, 130);
             // M5.Display.printf("Goal Pos: %d", present_position);
 
-            M5.Display.setCursor(10, 140);
+            M5.Display.setCursor(10, 125);
             M5.Display.printf("Velocity: %d (CH2:%ld)     ", current_velocity, encoder_ch2_value);
 
             M5.Display.setCursor(10, 170);
@@ -695,15 +722,15 @@ void loop() {
             M5.Display.setCursor(10, 200);
             M5.Display.printf("Encoder CH1: %ld          ", encoder_ch1_value);
 
-            M5.Display.setCursor(10, 220);
-            if (encoder_ch1_value == -44) {
-                M5.Display.printf("INSERT RACK | MIN!!!!!      ");
-            } else if (encoder_ch1_value < -44 ) {
-                M5.Display.printf("DO NOT INSERT RACK     ");
+            M5.Display.setCursor(10, 230);
+            if (encoder_ch1_value == -22) {
+                M5.Display.printf("MIN LIMIT (Pos ~552)        ");
             } else if (encoder_ch1_value == 0) {
-                M5.Display.printf("START POINT / HARD LIMIT     ");
+                M5.Display.printf("CENTER (Pos 2048)           ");
+            } else if (encoder_ch1_value == 22) {
+                M5.Display.printf("MAX LIMIT (Pos ~3544)       ");
             } else {
-                M5.Display.printf("                             ");
+                M5.Display.printf("Range: -22 to +22           ");
             }
 
     } else {
@@ -765,7 +792,7 @@ void loop() {
                           auto_return_acceleration, encoder_ch5_value);
 
         M5.Display.setCursor(10, 220);
-        if (stroke_angle >= 240) {
+        if (stroke_angle >= 180) {
             M5.Display.printf("LIMIT: +-%d deg (MAX)     ", stroke_angle);
         } else {
             M5.Display.printf("Range: +-%d deg          ", stroke_angle);
