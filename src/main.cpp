@@ -67,6 +67,7 @@ unsigned long cycle_start_time = 0;     // When current cycle started
 bool auto_mode_active = false;          // Track if we're in auto mode
 int saved_cycle_time = 3000;            // Remember cycle time when switching modes (default: 5000ms)
 bool use_encoder_control = false;       // Flag: use encoder values or keep defaults
+int auto_mode_center_position = 0;      // Motor position when entering auto mode (oscillate around this)
 
 // Power scaling factor: maps user range (0-2000) to motor capability
 // 0.5 = 50% of max motor power (max 32767), 1.0 = 100% of motor power
@@ -244,7 +245,9 @@ void setup() {
         dxl.torqueOff(DXL_ID);
         delay(100);
 
-        // Use Position Control Mode (0-4095) instead of Extended Position
+        // Use Extended Position Control Mode to avoid wrap-around issues
+        // This allows position tracking beyond one rotation (e.g., 0 to 10000)
+        // and prevents motor from choosing wrong direction when crossing 0/4095
         dxl.setOperatingMode(DXL_ID, OP_POSITION);
         delay(100);
 
@@ -290,64 +293,13 @@ void setup() {
         M5.Display.println("- Baud: 57600");
     }
 
-    // ========================================================================
-    // OPTION A: SET CH1 ENCODER TO MATCH CURRENT MOTOR POSITION
-    // ========================================================================
-    // Critical safety feature: Instead of forcing motor to position 0 (dangerous homing),
-    // we set the encoder value to represent where the motor currently is.
-    // This prevents dangerous movement on startup!
+    // System ready - encoders have been reset to 0
+    // Runtime safety clamp will protect against dangerous values
     if (encoder_found) {
-        M5.Display.setCursor(10, 150);
-        M5.Display.println("Syncing CH1 to motor...");
-
-        // Read where motor actually is right now
-        int32_t current_motor_position = dxl.getPresentPosition(DXL_ID);
-
-        // SAFETY: Clamp motor position to valid range (0-4914)
-        // Motor can report crazy values like 65600 if it's wrapped around or in extended mode
-        // We clamp for calculation purposes, but DON'T move the motor
-        if (current_motor_position < 0) {
-            current_motor_position = 0;
-        } else if (current_motor_position > MAX_POSITION_LIMIT) {
-            current_motor_position = MAX_POSITION_LIMIT;  // 4914 = max safe position
-        }
-
-        // NOTE: We do NOT send goal position here - motor stays where it is!
-        // Just sync the encoder to reflect the (clamped) position
-
-        // Calculate what CH1 encoder value should be to represent this (clamped) position
-        // Formula: position = (-encoder_ch1_value * MAX_POSITION * direction_multiplier) / ENCODER_COUNTS_PER_REV
-        // Solve for encoder_ch1_value: encoder_ch1_value = -(position * ENCODER_COUNTS_PER_REV) / (MAX_POSITION * direction_multiplier)
-        int32_t target_ch1_value = -(current_motor_position * ENCODER_COUNTS_PER_REV) / (MAX_POSITION * direction_multiplier);
-
-        // Set CH1 to match current position (motor won't move!)
-        bool ch1_sync_success = false;
-        for (int sync_attempt = 0; sync_attempt < 10; sync_attempt++) {
-            encoder.setEncoderValue(0, target_ch1_value);
-            delay(50);
-
-            // Verify it worked
-            int32_t ch1_verify = encoder.getEncoderValue(0);
-            if (abs(ch1_verify - target_ch1_value) <= 5) {  // Allow small tolerance (±5)
-                ch1_sync_success = true;
-                M5.Display.setCursor(10, 170);
-                M5.Display.printf("CH1=%ld Pos=%ld OK!", target_ch1_value, current_motor_position);
-                break;
-            }
-        }
-
-        // If sync failed, force it anyway
-        if (!ch1_sync_success) {
-            M5.Display.setCursor(10, 170);
-            M5.Display.println("CH1 stubborn - forcing sync");
-            encoder.setEncoderValue(0, target_ch1_value);
-            delay(100);
-        }
-
-        delay(1000);  // Show sync status for 1 second
+        M5.Display.setCursor(10, 155);
+        M5.Display.println("Ready! Encoders at 0");
+        delay(1000);
     }
-
-    delay(1000);  // Wait 1 second before starting loop
 }
 
 // ============================================================================
@@ -365,6 +317,11 @@ void loop() {
             auto_mode_active = true;
             cycle_start_time = millis();
             auto_stroke_range = 512;  // ±45 degrees (512 units)
+
+            // Capture current motor position as center point for safe mode too
+            auto_mode_center_position = dxl.getPresentPosition(DXL_ID);
+            if (auto_mode_center_position < 0) auto_mode_center_position = 0;
+            if (auto_mode_center_position > MAX_POSITION_LIMIT) auto_mode_center_position = MAX_POSITION_LIMIT;
         }
 
         // Calculate cycle timing
@@ -379,13 +336,13 @@ void loop() {
         int target_acceleration;
 
         if (time_in_cycle < push_time) {
-            // PUSH STROKE
-            target_position = -auto_stroke_range * auto_direction_swap;
+            // PUSH STROKE - relative to center position
+            target_position = auto_mode_center_position + (-auto_stroke_range * auto_direction_swap);
             target_velocity = auto_push_velocity;
             target_acceleration = auto_push_acceleration;
         } else {
-            // RETURN STROKE
-            target_position = auto_stroke_range * auto_direction_swap;
+            // RETURN STROKE - relative to center position
+            target_position = auto_mode_center_position + (auto_stroke_range * auto_direction_swap);
             target_velocity = auto_return_velocity;
             target_acceleration = auto_return_acceleration;
         }
@@ -485,15 +442,14 @@ void loop() {
             direction_multiplier *= -1;
 
             // Calculate what encoder value would maintain current motor position with new direction
-            // position = (-encoder_ch1_value * MAX_POSITION * direction_multiplier) / ENCODER_COUNTS_PER_REV
-            // Solve for encoder_ch1_value: encoder_ch1_value = -(position * ENCODER_COUNTS_PER_REV) / (MAX_POSITION * direction_multiplier)
-            int32_t new_encoder_value = -(current_motor_position * ENCODER_COUNTS_PER_REV) / (MAX_POSITION * direction_multiplier);
+            // Use same formula as startup sync
+            int32_t new_encoder_value = (current_motor_position * ENCODER_COUNTS_PER_REV * direction_multiplier) / MAX_POSITION;
 
             // Set encoder to this new value to maintain motor position
             encoder.setEncoderValue(0, new_encoder_value);
 
             // Send current position immediately to prevent movement
-            dxl.setGoalPosition(DXL_ID, current_motor_position);
+            // dxl.setGoalPosition(DXL_ID, current_motor_position);
             direction_just_changed = true;
         }
         last_ch4_button = encoder_ch4_button;
@@ -570,6 +526,14 @@ void loop() {
             // Keep encoder values preserved when switching modes
             // (encoders are NOT reset, parameters persist across mode switches)
 
+            // CRITICAL: Capture current motor position as center point
+            // This prevents dangerous 360° rotation when entering auto mode!
+            auto_mode_center_position = dxl.getPresentPosition(DXL_ID);
+
+            // Safety: Clamp center position to valid range
+            if (auto_mode_center_position < 0) auto_mode_center_position = 0;
+            if (auto_mode_center_position > MAX_POSITION_LIMIT) auto_mode_center_position = MAX_POSITION_LIMIT;
+
             // Start cycle timing from current position (no homing)
             cycle_start_time = millis();
 
@@ -640,7 +604,7 @@ void loop() {
             auto_direction_swap *= -1;
 
             // Send current position to motor to prevent movement
-            dxl.setGoalPosition(DXL_ID, current_motor_position);
+            // dxl.setGoalPosition(DXL_ID, current_motor_position);
         }
         last_ch8_button = encoder_ch8_button;
 
@@ -666,7 +630,8 @@ void loop() {
             // ============================================================
             // PUSH STROKE: FAST - creates water ripple
             // ============================================================
-            target_position = -auto_stroke_range * auto_direction_swap;
+            // Calculate position RELATIVE to center (where motor was when entering auto mode)
+            target_position = auto_mode_center_position + (-auto_stroke_range * auto_direction_swap);
             target_velocity = auto_push_velocity;
             target_acceleration = auto_push_acceleration;
 
@@ -674,7 +639,8 @@ void loop() {
             // ============================================================
             // RETURN STROKE: SLOW - gentle return
             // ============================================================
-            target_position = auto_stroke_range * auto_direction_swap;
+            // Calculate position RELATIVE to center (where motor was when entering auto mode)
+            target_position = auto_mode_center_position + (auto_stroke_range * auto_direction_swap);
             target_velocity = auto_return_velocity;
             target_acceleration = auto_return_acceleration;
         }
@@ -729,7 +695,7 @@ void loop() {
             M5.Display.setCursor(10, 200);
             M5.Display.printf("Encoder CH1: %ld          ", encoder_ch1_value);
 
-            M5.Display.setCursor(10, 230);
+            M5.Display.setCursor(10, 220);
             if (encoder_ch1_value == -44) {
                 M5.Display.printf("INSERT RACK | MIN!!!!!      ");
             } else if (encoder_ch1_value < -44 ) {
