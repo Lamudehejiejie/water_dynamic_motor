@@ -418,13 +418,8 @@ void loop() {
             // Save current cycle time to restore it later
             saved_cycle_time = auto_cycle_time;
 
-            // Reset ALL encoders when entering manual mode (isolate from auto mode values)
-            for (int ch = 0; ch < 8; ch++) {
-                encoder.setEncoderValue(ch, 0);
-            }
-
-            // Disable encoder control so auto mode uses defaults when returning
-            use_encoder_control = false;
+            // Keep encoder values preserved when switching modes
+            // (encoders are NOT reset, parameters persist across mode switches)
         }
 
         // ----------------------------------------------------------------
@@ -511,29 +506,20 @@ void loop() {
             // Restore saved cycle time from when we left auto mode
             auto_cycle_time = saved_cycle_time;
 
-            // Reset ALL encoders when entering auto mode (isolate from manual mode values)
-            for (int ch = 0; ch < 8; ch++) {
-                encoder.setEncoderValue(ch, 0);
-            }
+            // Keep encoder values preserved when switching modes
+            // (encoders are NOT reset, parameters persist across mode switches)
 
             // Start cycle timing from current position (no homing)
             cycle_start_time = millis();
+
+            // Enable encoder control immediately since we're preserving values
+            use_encoder_control = true;
         }
 
         // ----------------------------------------------------------------
         // ENCODER CONTROLS FOR AUTO MODE
         // ----------------------------------------------------------------
-        // Enable encoder control if any AUTO MODE encoder has been touched
-        if (!use_encoder_control) {
-            // Check if any encoder (CH1-CH7) has moved from zero
-            if (abs(encoder_ch1_value) > 0 || abs(encoder_ch2_value) > 0 || abs(encoder_ch3_value) > 0 ||
-                abs(encoder_ch4_value) > 0 || abs(encoder_ch5_value) > 0 ||
-                abs(encoder_ch6_value) > 0 || abs(encoder_ch7_value) > 0) {
-                use_encoder_control = true;  // User has touched an encoder, start using encoder values
-            }
-        }
-
-        // Only update from encoders if they've been touched, otherwise use defaults
+        // Update auto mode parameters from encoder values
         if (use_encoder_control) {
             // CH1: CYCLE TIME (adjust from default 3000ms, range: 1000-8000ms)
             auto_cycle_time = 3000 + (encoder_ch1_value * 25);  // 25ms per encoder click
