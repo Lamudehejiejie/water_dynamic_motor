@@ -290,11 +290,40 @@ void setup() {
         M5.Display.println("- Baud: 57600");
     }
 
-    // Final CH1 reset right before main loop starts
-    // This ensures CH1 starts at 0 without moving the motor
+    // ========================================================================
+    // OPTION A: AGGRESSIVE CH1 SAFETY RESET
+    // ========================================================================
+    // Critical safety feature: CH1 encoder can retain values like -961 after power cycle
+    // This can cause dangerous motor movements, so we aggressively reset it
     if (encoder_found) {
-        encoder.setEncoderValue(0, 0);
-        delay(50);
+        M5.Display.setCursor(10, 150);
+        M5.Display.println("Resetting CH1 encoder...");
+
+        // Try resetting CH1 up to 10 times with verification
+        bool ch1_reset_success = false;
+        for (int reset_attempt = 0; reset_attempt < 10; reset_attempt++) {
+            encoder.setEncoderValue(0, 0);  // Force CH1 to 0
+            delay(50);
+
+            // Verify the reset worked
+            int32_t ch1_verify = encoder.getEncoderValue(0);
+            if (abs(ch1_verify) <= 5) {  // Allow small tolerance (±5)
+                ch1_reset_success = true;
+                M5.Display.setCursor(10, 170);
+                M5.Display.printf("CH1 reset OK! (try %d)    ", reset_attempt + 1);
+                break;
+            }
+        }
+
+        // If reset failed after 10 attempts, force it to 0 anyway
+        if (!ch1_reset_success) {
+            M5.Display.setCursor(10, 170);
+            M5.Display.println("CH1 stubborn - forcing 0");
+            encoder.setEncoderValue(0, 0);
+            delay(100);
+        }
+
+        delay(1000);  // Show reset status for 1 second
     }
 
     delay(1000);  // Wait 1 second before starting loop
@@ -447,6 +476,17 @@ void loop() {
             direction_just_changed = true;
         }
         last_ch4_button = encoder_ch4_button;
+
+        // ----------------------------------------------------------------
+        // OPTION B: RUNTIME SAFETY CLAMP FOR CH1
+        // ----------------------------------------------------------------
+        // Safety check: If CH1 has dangerous value (like -961), reset it immediately
+        // Normal range is 0 to -44, so anything beyond ±100 is suspicious
+        if (encoder_ch1_value < -100 || encoder_ch1_value > 100) {
+            // Dangerous value detected! Reset to safe position
+            encoder.setEncoderValue(0, 0);
+            encoder_ch1_value = 0;  // Use safe value this loop iteration
+        }
 
         // ----------------------------------------------------------------
         // ENCODER CH1: POSITION CONTROL
