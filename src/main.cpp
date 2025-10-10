@@ -305,15 +305,15 @@ void setup() {
 
         // SAFETY: Clamp motor position to valid range (0-4914)
         // Motor can report crazy values like 65600 if it's wrapped around or in extended mode
-        // We need to bring it back to safe operating range
+        // We clamp for calculation purposes, but DON'T move the motor
         if (current_motor_position < 0) {
             current_motor_position = 0;
         } else if (current_motor_position > MAX_POSITION_LIMIT) {
             current_motor_position = MAX_POSITION_LIMIT;  // 4914 = max safe position
         }
 
-        // Send motor to clamped position immediately to prevent it trying to reach invalid positions
-        dxl.setGoalPosition(DXL_ID, current_motor_position);
+        // NOTE: We do NOT send goal position here - motor stays where it is!
+        // Just sync the encoder to reflect the (clamped) position
 
         // Calculate what CH1 encoder value should be to represent this (clamped) position
         // Formula: position = (-encoder_ch1_value * MAX_POSITION * direction_multiplier) / ENCODER_COUNTS_PER_REV
