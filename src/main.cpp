@@ -291,39 +291,48 @@ void setup() {
     }
 
     // ========================================================================
-    // OPTION A: AGGRESSIVE CH1 SAFETY RESET
+    // OPTION A: SET CH1 ENCODER TO MATCH CURRENT MOTOR POSITION
     // ========================================================================
-    // Critical safety feature: CH1 encoder can retain values like -961 after power cycle
-    // This can cause dangerous motor movements, so we aggressively reset it
+    // Critical safety feature: Instead of forcing motor to position 0 (dangerous homing),
+    // we set the encoder value to represent where the motor currently is.
+    // This prevents dangerous movement on startup!
     if (encoder_found) {
         M5.Display.setCursor(10, 150);
-        M5.Display.println("Resetting CH1 encoder...");
+        M5.Display.println("Syncing CH1 to motor...");
 
-        // Try resetting CH1 up to 10 times with verification
-        bool ch1_reset_success = false;
-        for (int reset_attempt = 0; reset_attempt < 10; reset_attempt++) {
-            encoder.setEncoderValue(0, 0);  // Force CH1 to 0
+        // Read where motor actually is right now
+        int32_t current_motor_position = dxl.getPresentPosition(DXL_ID);
+
+        // Calculate what CH1 encoder value should be to represent this position
+        // Formula: position = (-encoder_ch1_value * MAX_POSITION * direction_multiplier) / ENCODER_COUNTS_PER_REV
+        // Solve for encoder_ch1_value: encoder_ch1_value = -(position * ENCODER_COUNTS_PER_REV) / (MAX_POSITION * direction_multiplier)
+        int32_t target_ch1_value = -(current_motor_position * ENCODER_COUNTS_PER_REV) / (MAX_POSITION * direction_multiplier);
+
+        // Set CH1 to match current position (motor won't move!)
+        bool ch1_sync_success = false;
+        for (int sync_attempt = 0; sync_attempt < 10; sync_attempt++) {
+            encoder.setEncoderValue(0, target_ch1_value);
             delay(50);
 
-            // Verify the reset worked
+            // Verify it worked
             int32_t ch1_verify = encoder.getEncoderValue(0);
-            if (abs(ch1_verify) <= 5) {  // Allow small tolerance (±5)
-                ch1_reset_success = true;
+            if (abs(ch1_verify - target_ch1_value) <= 5) {  // Allow small tolerance (±5)
+                ch1_sync_success = true;
                 M5.Display.setCursor(10, 170);
-                M5.Display.printf("CH1 reset OK! (try %d)    ", reset_attempt + 1);
+                M5.Display.printf("CH1=%ld Pos=%ld OK!", target_ch1_value, current_motor_position);
                 break;
             }
         }
 
-        // If reset failed after 10 attempts, force it to 0 anyway
-        if (!ch1_reset_success) {
+        // If sync failed, force it anyway
+        if (!ch1_sync_success) {
             M5.Display.setCursor(10, 170);
-            M5.Display.println("CH1 stubborn - forcing 0");
-            encoder.setEncoderValue(0, 0);
+            M5.Display.println("CH1 stubborn - forcing sync");
+            encoder.setEncoderValue(0, target_ch1_value);
             delay(100);
         }
 
-        delay(1000);  // Show reset status for 1 second
+        delay(1000);  // Show sync status for 1 second
     }
 
     delay(1000);  // Wait 1 second before starting loop
