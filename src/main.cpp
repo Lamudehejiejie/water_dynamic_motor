@@ -74,8 +74,8 @@ const float POWER_SCALE = 0.2;          // Adjust this to increase/decrease max 
 
 // Auto mode parameters (controllable via encoders)
 int auto_cycle_time = 3000;             // Total cycle time (ms) - CH1 - Default: 5000ms
-int auto_push_velocity = 1000;          // Fast push velocity (500-2000) - CH2 - Default: 1000
-int auto_push_acceleration = 330;       // Fast push acceleration (100-5000) - CH3 - Default: 330
+int auto_push_velocity = 500;          // Fast push velocity (500-2000) - CH2 - Default: 1000
+int auto_push_acceleration = 500;       // Fast push acceleration (100-5000) - CH3 - Default: 330
 int auto_return_velocity = 100;         // Slow return velocity (50-500) - CH4
 int auto_return_acceleration = 100;     // Slow return acceleration (10-1000) - CH5
 int auto_push_ratio = 33;               // Push time as % of cycle (5-90%) - CH6 - Default: 33%
@@ -248,9 +248,9 @@ void setup() {
         dxl.setOperatingMode(DXL_ID, OP_POSITION);
         delay(100);
 
-        // Set motion profile
-        current_velocity = 300;
-        current_acceleration = 100;
+        // Set motion profile to match manual mode defaults
+        current_velocity = 500;
+        current_acceleration = 500;
         dxl.setProfileVelocity(DXL_ID, current_velocity);
         dxl.setProfileAcceleration(DXL_ID, current_acceleration);
         delay(100);
@@ -385,13 +385,13 @@ void loop() {
 
     // Read all encoder values and buttons
     int32_t encoder_ch1_value = encoder.getEncoderValue(0);
-    int32_t encoder_ch2_value = max(0, encoder.getEncoderValue(1));
-    int32_t encoder_ch3_value = max(0, encoder.getEncoderValue(2));
-    int32_t encoder_ch4_value = max(0, encoder.getEncoderValue(3));
-    int32_t encoder_ch5_value = max(0, encoder.getEncoderValue(4));
-    int32_t encoder_ch6_value = max(0, encoder.getEncoderValue(5));
-    int32_t encoder_ch7_value = max(0, encoder.getEncoderValue(6));
-    int32_t encoder_ch8_value = max(0, encoder.getEncoderValue(7));
+    int32_t encoder_ch2_value = encoder.getEncoderValue(1);
+    int32_t encoder_ch3_value = encoder.getEncoderValue(2);
+    int32_t encoder_ch4_value = encoder.getEncoderValue(3);
+    int32_t encoder_ch5_value = encoder.getEncoderValue(4);
+    int32_t encoder_ch6_value = encoder.getEncoderValue(5);
+    int32_t encoder_ch7_value = encoder.getEncoderValue(6);
+    int32_t encoder_ch8_value = encoder.getEncoderValue(7);
 
     bool encoder_ch1_button = encoder.getButtonStatus(0);
     bool encoder_ch2_button = encoder.getButtonStatus(1);
@@ -465,10 +465,10 @@ void loop() {
         // ----------------------------------------------------------------
         // ENCODER CH2: VELOCITY CONTROL
         // ----------------------------------------------------------------
-        // Range: 0-2000 (covers full motor speed range ~0-458 RPM)
-        // Use max(0, value) so negative values = 0 (stay at minimum)
-        int new_velocity = max(0, encoder_ch2_value) * 2.5;
-        if (new_velocity > 2000) new_velocity = 2000;
+        // Adjust from default 500, range: 10-600
+        int new_velocity = 500 + (encoder_ch2_value * 2.5);
+        if (new_velocity < 10) new_velocity = 10;
+        if (new_velocity > 600) new_velocity = 600;
 
         if (new_velocity != current_velocity) {
             dxl.setProfileVelocity(DXL_ID, new_velocity);
@@ -478,10 +478,10 @@ void loop() {
         // ----------------------------------------------------------------
         // ENCODER CH3: ACCELERATION CONTROL
         // ----------------------------------------------------------------
-        // Range: 10-5000 (wide range for noticeable control)
-        // Use max(0, value) so negative values = 0 (stay at minimum)
-        int new_acceleration = 10 + (max(0, encoder_ch3_value) * 5);
-        if (new_acceleration > 5000) new_acceleration = 5000;
+        // Adjust from default 500, range: 10-600
+        int new_acceleration = 500 + (encoder_ch3_value * 2.5);
+        if (new_acceleration < 10) new_acceleration = 10;
+        if (new_acceleration > 600) new_acceleration = 600;
 
         if (new_acceleration != current_acceleration) {
             dxl.setProfileAcceleration(DXL_ID, new_acceleration);
@@ -535,40 +535,41 @@ void loop() {
 
         // Only update from encoders if they've been touched, otherwise use defaults
         if (use_encoder_control) {
-            // CH1: CYCLE TIME (1000-8000ms range)
+            // CH1: CYCLE TIME (adjust from default 3000ms, range: 1000-8000ms)
             auto_cycle_time = 3000 + (encoder_ch1_value * 25);  // 25ms per encoder click
             if (auto_cycle_time < 1000) auto_cycle_time = 1000;
             if (auto_cycle_time > 8000) auto_cycle_time = 8000;
 
-            // CH2: PUSH VELOCITY (200-2000 user range, scaled to motor capability)
-            int user_push_velocity = 50 + (abs(encoder_ch2_value) * 2.5);
-            if (user_push_velocity > 2000) user_push_velocity = 2000;
-            auto_push_velocity = (int)(user_push_velocity * POWER_SCALE * 32767 / 2000);
+            // CH2: PUSH VELOCITY (adjust from default 500, range: 10-600)
+            auto_push_velocity = 500 + (encoder_ch2_value * 2.5);
+            if (auto_push_velocity < 10) auto_push_velocity = 10;
+            if (auto_push_velocity > 600) auto_push_velocity = 600;
 
-            // CH3: PUSH ACCELERATION (100-2000 user range, scaled to motor capability)
-            int user_push_acceleration = 50 + (abs(encoder_ch3_value) * 2.5);
-            if (user_push_acceleration > 2000) user_push_acceleration = 2000;
-            auto_push_acceleration = (int)(user_push_acceleration * POWER_SCALE * 32767 / 2000);
+            // CH3: PUSH ACCELERATION (adjust from default 500, range: 10-600)
+            auto_push_acceleration = 500 + (encoder_ch3_value * 2.5);
+            if (auto_push_acceleration < 10) auto_push_acceleration = 10;
+            if (auto_push_acceleration > 600) auto_push_acceleration = 600;
 
-            // CH4: RETURN VELOCITY (200-2000 user range, scaled to motor capability)
-            int user_return_velocity = 10 + (abs(encoder_ch4_value) * 2.5);
-            if (user_return_velocity > 2000) user_return_velocity = 2000;
-            auto_return_velocity = (int)(user_return_velocity * POWER_SCALE * 32767 / 2000);
+            // CH4: RETURN VELOCITY (adjust from default 100, range: 10-600)
+            auto_return_velocity = 100 + (encoder_ch4_value * 2.5);
+            if (auto_return_velocity < 10) auto_return_velocity = 10;
+            if (auto_return_velocity > 600) auto_return_velocity = 600;
 
-            // CH5: RETURN ACCELERATION (100-2000 user range, scaled to motor capability)
-            int user_return_acceleration = 10 + (abs(encoder_ch5_value) * 2.5);
-            if (user_return_acceleration > 2000) user_return_acceleration = 2000;
-            auto_return_acceleration = (int)(user_return_acceleration * POWER_SCALE * 32767 / 2000);
+            // CH5: RETURN ACCELERATION (adjust from default 100, range: 10-600)
+            auto_return_acceleration = 100 + (encoder_ch5_value * 2.5);
+            if (auto_return_acceleration < 10) auto_return_acceleration = 10;
+            if (auto_return_acceleration > 600) auto_return_acceleration = 600;
 
-            // CH6: PUSH/RETURN RATIO (45-90%)
-            auto_push_ratio = 10 + (abs(encoder_ch6_value) * 2);
+            // CH6: PUSH/RETURN RATIO (adjust from default 33%, range: 5-90%)
+            auto_push_ratio = 33 + (encoder_ch6_value * 2);
             if (auto_push_ratio > 90) auto_push_ratio = 90;
             if (auto_push_ratio < 5) auto_push_ratio = 5;
 
-            // CH7: STROKE RANGE (512-2730 units, 45-240°, hard limit at ±240°)
-            auto_stroke_range = 512 + abs(encoder_ch7_value) * 12;
+            // CH7: STROKE RANGE (adjust from default 512 units/45°, range: 512-2730 units/45-240°)
+            auto_stroke_range = 512 + (encoder_ch7_value * 12);
             const int MAX_STROKE_LIMIT = 2730;  // 240 degrees = (240 * 4095 / 360)
             if (auto_stroke_range > MAX_STROKE_LIMIT) auto_stroke_range = MAX_STROKE_LIMIT;
+            if (auto_stroke_range < 512) auto_stroke_range = 512;
         }
 
         // CH1 Button: Reset all encoders to restore defaults
