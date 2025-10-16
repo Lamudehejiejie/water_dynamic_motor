@@ -5,16 +5,8 @@
 #include <Dynamixel2Arduino.h>   // ROBOTIS library for Dynamixel motor control
 #include <UNIT_8ENCODER.h>       // M5Stack 8-Encoder Unit library
 
-// ============================================================================
-// COMMUNICATION SETUP - RS485 via DMX Base
-// ============================================================================
-// You are using RS485 communication, NOT plain serial!
-// - M5Stack CoreS3 speaks TTL serial (3.3V logic)
-// - DMX Base converts TTL → RS485 (differential signaling A/B)
-// - Dynamixel motor speaks RS485
-//
+
 // The flow: M5Stack (TTL) → DMX Base (TTL→RS485) → Motor (RS485)
-//
 // M5Stack DMX Base Pin Configuration for CoreS3:
 #define DXL_SERIAL Serial1       // Use Serial1 hardware UART
 #define TXD_PIN 7                // GPIO 7 = TX (transmit data to DMX Base)
@@ -57,9 +49,10 @@ const int MAX_POSITION = 4095;     // XW540-T260-R: 4095 = 360° (one full rotat
 const int CENTER_POSITION = 2048;  // Center position (180°) - safe starting point
 const int MAX_POSITION_LIMIT = 4095;  // Hard limit: never exceed one full rotation
                                    // 0 = 0°, 2048 = 180°, 4095 = 360°
+//tenkii, change here!                    
 const int ENCODER_CH1_RANGE = 22;  // CH1 encoder range: -22 to +22 (44 clicks total, safety limited)
 const int POSITION_SCALE = 68;     // Scale factor: 4095/60 ≈ 68 (same scale as ±30, just limited range)
-
+const int WALL_ALIGNED_CH1 = 22;
 // Manual mode control variables
 int current_velocity = 0;          // Track current velocity setting
 int current_acceleration = 0;      // Track current acceleration setting
@@ -71,20 +64,24 @@ bool auto_mode_active = false;          // Track if we're in auto mode
 int saved_cycle_time = 3000;            // Remember cycle time when switching modes (default: 5000ms)
 bool use_encoder_control = false;       // Flag: use encoder values or keep defaults
 int auto_mode_center_position = 0;      // Motor position when entering auto mode (oscillate around this)
-
+bool auto_mode_homed = false;
+int wall_motor_position = 0;
 // Power scaling factor: maps user range (0-2000) to motor capability
 // 0.5 = 50% of max motor power (max 32767), 1.0 = 100% of motor power
 const float POWER_SCALE = 0.2;          // Adjust this to increase/decrease max power
 
 // Auto mode parameters (controllable via encoders)
-int auto_cycle_time = 3000;             // Total cycle time (ms) - CH1 - Default: 5000ms
-int auto_push_velocity = 500;          // Fast push velocity (500-2000) - CH2 - Default: 1000
-int auto_push_acceleration = 500;       // Fast push acceleration (100-5000) - CH3 - Default: 330
+int auto_cycle_time = 3000;             // Total cycle time (ms) - CH1 
+int auto_push_velocity = 500;          // Fast push velocity (500-2000) - CH2 
+int auto_push_acceleration = 500;       // Fast push acceleration (100-5000) - CH3 
 int auto_return_velocity = 100;         // Slow return velocity (50-500) - CH4
 int auto_return_acceleration = 100;     // Slow return acceleration (10-1000) - CH5
-int auto_push_ratio = 33;               // Push time as % of cycle (5-90%) - CH6 - Default: 33%
+int auto_push_ratio = 33;               // Push time as % of cycle (5-90%) - CH6 
 int auto_direction_swap = -1;           // Direction multiplier: 1=normal, -1=swapped - CH7
-int auto_stroke_range = 512;           // Stroke range in units (±45°) - CH8 - Default: 512 (45°)
+int auto_stroke_range = 512;           // Stroke range in units (±45°) - CH8 - 
+
+//random function
+int auto_cycle_interval = 1000;
 
 // ============================================================================
 // SETUP - Runs once when M5Stack starts
@@ -95,33 +92,21 @@ void setup() {
     M5.begin(cfg);
     M5.Power.setExtOutput(true);  // turn on Grove 5V, 
     delay(300);                   // wait a bit
-    //3) Start I2C on Port A (SDA=GPIO2, SCL=GPIO1)
-    // Send multiple reset attempts to clear any stuck state on I2C devices
+
     for (int i = 0; i < 3; i++) {
         Wire.begin(2, 1);
         encoder.begin(&Wire, 0x41, 2, 1);
-        // delay(100);
-
-        // Send general call reset to all I2C devices
         Wire.beginTransmission(0x00);
         Wire.write(0x06);  // General call reset
         Wire.endTransmission();
-        // delay(200);
-
-        // Send stop conditions to clear bus
         Wire.beginTransmission(ENCODER_I2C_ADDR);
         Wire.endTransmission();
-        // delay(200);
-
         Wire.end();
-        // delay(500);
     }
 
     // Final I2C initialization
     Wire.begin(2, 1);
     // delay(100);
-
-
 
     // Setup display
     M5.Display.clear();
@@ -158,22 +143,15 @@ void setup() {
 
         // Try to initialize encoder
         if (encoder.begin(&Wire, ENCODER_I2C_ADDR, 2, 1)) {
-            // M5.Display.setCursor(10, 80);
-            // M5.Display.printf("Encoder OK! (try %d)    ", retry + 1);
-
-            // Reset all encoder counters MULTIPLE TIMES to clear any stuck state after power cycle
             for (int reset_attempt = 0; reset_attempt < 5; reset_attempt++) {
                 for (int ch = 0; ch < 8; ch++) {
                     encoder.resetCounter(ch);
                 }
-                delay(50);  // Small delay between reset attempts
+                delay(50); 
             }
 
-            // Verify CH1 is actually 0
             delay(100);
             int32_t ch1_check = encoder.getEncoderValue(0);
-            // M5.Display.setCursor(10, 40);
-            // M5.Display.printf("CH1 value: %ld        ", ch1_check);
 
             encoder_found = true;
             break;  // Success - exit retry loop
@@ -198,17 +176,9 @@ void setup() {
         // Continue without encoder - will use default auto mode
     }
 
-    // ========================================================================
-    // INITIALIZE RS485 COMMUNICATION
-    // ========================================================================
-    // Configure Serial1 UART with:
-    // - Baud rate: 1000000 (must match motor's baud rate setting)
-    // - SERIAL_8N1: 8 data bits, No parity, 1 stop bit (standard)
-    // - RX pin: GPIO 10, TX pin: GPIO 7
     Serial1.begin(DXL_BAUD_RATE, SERIAL_8N1, RXD_PIN, TXD_PIN);
 
-    // Initialize Dynamixel library
-    // This sets up packet protocol and RS485 direction control (EN pin)
+
     dxl.begin(DXL_BAUD_RATE);
     dxl.setPortProtocolVersion(DXL_PROTOCOL_VERSION);
 
@@ -248,9 +218,6 @@ void setup() {
         dxl.torqueOff(DXL_ID);
         delay(100);
 
-        // Use Extended Position Control Mode to avoid wrap-around issues
-        // This allows position tracking beyond one rotation (e.g., 0 to 10000)
-        // and prevents motor from choosing wrong direction when crossing 0/4095
         dxl.setOperatingMode(DXL_ID, OP_POSITION);
         delay(100);
 
@@ -277,11 +244,7 @@ void setup() {
             dxl.ledOn(DXL_ID);
             // Encoder already reset during initialization
         } else {
-            // M5.Display.println("ERROR: Torque OFF!");
-            // M5.Display.setCursor(10, 130);
-            // M5.Display.println("Motor may be moving");
-            // M5.Display.setCursor(10, 150);
-            // M5.Display.println("or has HW error");
+
         }
     } else {
         M5.Display.setCursor(10, 50);
@@ -549,6 +512,8 @@ void loop() {
         // Initialize auto mode on first entry
         if (!auto_mode_active) {
             auto_mode_active = true;
+            use_encoder_control = true;
+            auto_mode_homed = false;
             M5.Display.clear();  // Clear display when switching modes
 
             // Restore saved cycle time from when we left auto mode
@@ -559,19 +524,39 @@ void loop() {
 
             // CRITICAL: Always center auto mode at 2048 (center position)
             // This prevents dangerous wrap-around at 0/4095 boundary
-            auto_mode_center_position = CENTER_POSITION;
-
+            
+            wall_motor_position = CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE * -1);
+            auto_mode_center_position = wall_motor_position;
             // Start cycle timing from current position (no homing)
-            cycle_start_time = millis();
+            dxl.setProfileVelocity(DXL_ID, auto_return_velocity);
+            dxl.setProfileAcceleration(DXL_ID, auto_return_acceleration);
+            dxl.setGoalPosition(DXL_ID, wall_motor_position);
 
-            // Enable encoder control immediately since we're preserving values
-            use_encoder_control = true;
+            
         }
 
+ 
+        // Enable encoder control immediately since we're preserving values
+        
+        
         // ----------------------------------------------------------------
         // ENCODER CONTROLS FOR AUTO MODE
         // ----------------------------------------------------------------
         // Update auto mode parameters from encoder values
+        if (!auto_mode_homed)
+        {
+            //int wall_motor_position = CENTER_POSITION +  (WALL_ALIGNED_CH1 * POSITION_SCALE * direction_multiplier);
+            int32_t current_pos = dxl.getPresentPosition(DXL_ID);
+            if (abs(current_pos - wall_motor_position) < 10)
+            {
+                auto_mode_homed = true;
+                cycle_start_time = millis();
+            }
+            return;
+        }
+
+    if (auto_mode_homed)
+    {
         if (use_encoder_control) {
             // CH1: CYCLE TIME (adjust from default 3000ms, range: 1000-8000ms)
             auto_cycle_time = 3000 + (encoder_ch1_value * 25);  // 25ms per encoder click
@@ -608,8 +593,13 @@ void loop() {
             const int MAX_STROKE_LIMIT = 2048;  // Maximum 2048 to prevent exceeding 0-4095 range when centered at 2048
             if (auto_stroke_range > MAX_STROKE_LIMIT) auto_stroke_range = MAX_STROKE_LIMIT;
             if (auto_stroke_range < 512) auto_stroke_range = 512;
-        }
 
+            //CH8: interval between cycle
+            auto_cycle_interval = encoder_ch8_value * 100;
+            if (auto_cycle_interval > 2000) auto_cycle_interval = 2000;
+            if (auto_cycle_interval < 0) auto_cycle_interval = 0;
+        }
+   
         // CH1 Button: Reset all encoders to restore defaults
         static bool last_ch1_button = false;
         if (encoder_ch1_button && !last_ch1_button) {
@@ -642,8 +632,17 @@ void loop() {
         unsigned long elapsed_time = current_time - cycle_start_time;
         unsigned long time_in_cycle = elapsed_time % auto_cycle_time;
 
+        static bool was_in_push_last_loop = false;
+
         // Calculate push and return times based on ratio
         int push_time = (auto_cycle_time * auto_push_ratio) / 100;
+        bool currently_in_push = (time_in_cycle < push_time);
+        if (currently_in_push && ! was_in_push_last_loop)
+        {
+            delay(auto_cycle_interval);
+        }
+        was_in_push_last_loop = currently_in_push;
+
         int return_time = auto_cycle_time - push_time;
 
         // ----------------------------------------------------------------
@@ -658,16 +657,20 @@ void loop() {
             // PUSH STROKE: FAST - creates water ripple
             // ============================================================
             // Calculate position RELATIVE to center (where motor was when entering auto mode)
-            target_position = auto_mode_center_position + (-auto_stroke_range * auto_direction_swap);
+            target_position = auto_mode_center_position + auto_stroke_range;
             target_velocity = auto_push_velocity;
             target_acceleration = auto_push_acceleration;
-
+            // ============================================================
+            // PUSH from the wall
+            // ============================================================
+            
+            
         } else {
             // ============================================================
             // RETURN STROKE: SLOW - gentle return
             // ============================================================
             // Calculate position RELATIVE to center (where motor was when entering auto mode)
-            target_position = auto_mode_center_position + (auto_stroke_range * auto_direction_swap);
+            target_position = auto_mode_center_position;
             target_velocity = auto_return_velocity;
             target_acceleration = auto_return_acceleration;
         }
@@ -692,8 +695,9 @@ void loop() {
 
         // Send target position
         dxl.setGoalPosition(DXL_ID, target_position);
-    }
 
+    }
+}
     // ========================================================================
     // DISPLAY INFO - Update only every 100ms to reduce flicker
     // ========================================================================
@@ -724,11 +728,11 @@ void loop() {
 
             M5.Display.setCursor(10, 230);
             if (encoder_ch1_value == -22) {
-                M5.Display.printf("MIN LIMIT (Pos ~552)        ");
+                M5.Display.printf("MIN LIMIT (Pos ~3544)        ");
             } else if (encoder_ch1_value == 0) {
                 M5.Display.printf("CENTER (Pos 2048)           ");
             } else if (encoder_ch1_value == 22) {
-                M5.Display.printf("MAX LIMIT (Pos ~3544)       ");
+                M5.Display.printf("MAX LIMIT (Pos ~552)       ");
             } else {
                 M5.Display.printf("Range: -22 to +22           ");
             }
@@ -791,6 +795,10 @@ void loop() {
                           auto_return_velocity, encoder_ch4_value,
                           auto_return_acceleration, encoder_ch5_value);
 
+        M5.Display.setCursor(10,40);
+        M5.Display.printf("Cycle_interval: %dms(%ld)",
+                        auto_cycle_interval, encoder_ch8_value);
+                  
         M5.Display.setCursor(10, 220);
         if (stroke_angle >= 180) {
             M5.Display.printf("LIMIT: +-%d deg (MAX)     ", stroke_angle);
@@ -798,7 +806,10 @@ void loop() {
             M5.Display.printf("Range: +-%d deg          ", stroke_angle);
         }
         }
+
+
+        
     }
 
-    delay(1000/120.);  // Update 120 times per second
+    delay(1000/120.);  // FPS
 }
