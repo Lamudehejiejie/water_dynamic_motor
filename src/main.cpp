@@ -569,7 +569,7 @@ void loop() {
         if (use_encoder_control) {
             // CH1: CYCLE TIME (adjust from default 3000ms, range: 1000-8000ms)
             auto_cycle_time = 3000 + (encoder_ch1_value * 25);  // 25ms per encoder click
-            if (auto_cycle_time < 1000) auto_cycle_time = 1000;
+            if (auto_cycle_time < 100) auto_cycle_time = 100;
             if (auto_cycle_time > 8000) auto_cycle_time = 8000;
 
             // CH2: PUSH VELOCITY (adjust from default 500, range: 10-600)
@@ -601,11 +601,11 @@ void loop() {
             auto_stroke_range = 512 + (encoder_ch7_value * 12);
             const int MAX_STROKE_LIMIT = 2048;  // Maximum 2048 to prevent exceeding 0-4095 range when centered at 2048
             if (auto_stroke_range > MAX_STROKE_LIMIT) auto_stroke_range = MAX_STROKE_LIMIT;
-            if (auto_stroke_range < 512) auto_stroke_range = 512;
+            if (auto_stroke_range < 8) auto_stroke_range = 8;
 
             //CH8: interval between cycle
-            auto_cycle_interval = encoder_ch8_value * 100;
-            if (auto_cycle_interval > 2000) auto_cycle_interval = 2000;
+            auto_cycle_interval = encoder_ch8_value * 25;
+            if (auto_cycle_interval > 5000) auto_cycle_interval = 5000;
             if (auto_cycle_interval < 0) auto_cycle_interval = 0;
         }
    
