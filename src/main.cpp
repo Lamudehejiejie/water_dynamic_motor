@@ -52,7 +52,7 @@ const int MAX_POSITION_LIMIT = 4095;  // Hard limit: never exceed one full rotat
 //tenkii, change here!                    
 const int ENCODER_CH1_RANGE = 22;  // CH1 encoder range: -22 to +22 (44 clicks total, safety limited)
 const int POSITION_SCALE = 68;     // Scale factor: 4095/60 ≈ 68 (same scale as ±30, just limited range)
-const int WALL_ALIGNED_CH1 = 22;
+const int WALL_ALIGNED_CH1 = -10;
 // Manual mode control variables
 int current_velocity = 0;          // Track current velocity setting
 int current_acceleration = 0;      // Track current acceleration setting
@@ -77,7 +77,7 @@ int auto_push_acceleration = 500;       // Fast push acceleration (100-5000) - C
 int auto_return_velocity = 100;         // Slow return velocity (50-500) - CH4
 int auto_return_acceleration = 100;     // Slow return acceleration (10-1000) - CH5
 int auto_push_ratio = 33;               // Push time as % of cycle (5-90%) - CH6 
-int auto_direction_swap = -1;           // Direction multiplier: 1=normal, -1=swapped - CH7
+int auto_direction_swap = 1;           // Direction multiplier: 1=normal, -1=swapped - CH7
 int auto_stroke_range = 512;           // Stroke range in units (±45°) - CH8 - 
 
 //random function
@@ -553,6 +553,14 @@ void loop() {
                 cycle_start_time = millis();
             }
             return;
+            // M5.Display.setCursor(10, 90);
+            // M5.Display.printf("HOMING...                    ");
+            // M5.Display.setCursor(10, 110);
+            // M5.Display.printf("Current: %ld Target: %d      ",
+            // current_pos, wall_motor_position);
+            // M5.Display.setCursor(10, 130);
+            // M5.Display.printf("Distance: %ld                ",
+            // abs(current_pos - wall_motor_position));
         }
 
     if (auto_mode_homed)
@@ -737,6 +745,10 @@ void loop() {
                 M5.Display.printf("Range: -22 to +22           ");
             }
 
+            M5.Display.setCursor(10, 10);
+            M5.Display.printf("Motor Pos: %ld    ",
+                             present_position);
+                            
     } else {
         // AUTO MODE DISPLAY
         unsigned long current_time = millis();
@@ -795,10 +807,22 @@ void loop() {
                           auto_return_velocity, encoder_ch4_value,
                           auto_return_acceleration, encoder_ch5_value);
 
-        M5.Display.setCursor(10,40);
+        M5.Display.setCursor(10,0);
         M5.Display.printf("Cycle_interval: %dms(%ld)",
                         auto_cycle_interval, encoder_ch8_value);
-                  
+        
+        M5.Display.setCursor(10,30);
+        M5.Display.printf("wall_motor_position: %d",
+                        wall_motor_position);
+
+        M5.Display.setCursor(10, 60);
+        M5.Display.printf("auto_mode_center: %d    ",
+                        auto_mode_center_position); 
+
+        M5.Display.setCursor(10, 80);
+        M5.Display.printf("Motor Pos: %ld    ",
+                            present_position);
+                        
         M5.Display.setCursor(10, 220);
         if (stroke_angle >= 180) {
             M5.Display.printf("LIMIT: +-%d deg (MAX)     ", stroke_angle);
