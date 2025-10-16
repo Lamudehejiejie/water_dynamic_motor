@@ -52,11 +52,11 @@ const int MAX_POSITION_LIMIT = 4095;  // Hard limit: never exceed one full rotat
 //tenkii, change here!                    
 const int ENCODER_CH1_RANGE = 22;  // CH1 encoder range: -22 to +22 (44 clicks total, safety limited)
 const int POSITION_SCALE = 68;     // Scale factor: 4095/60 ≈ 68 (same scale as ±30, just limited range)
-const int WALL_ALIGNED_CH1 = -10;
+const int WALL_ALIGNED_CH1 = 20;
 // Manual mode control variables
 int current_velocity = 0;          // Track current velocity setting
 int current_acceleration = 0;      // Track current acceleration setting
-int direction_multiplier = -1;      // Direction: 1 = FWD, -1 = REV
+const int direction_multiplier = 1;      // Direction: 1 = FWD, -1 = REV
 
 // Auto mode control variables
 unsigned long cycle_start_time = 0;     // When current cycle started
@@ -422,26 +422,26 @@ void loop() {
         // ----------------------------------------------------------------
         // ENCODER CH4: DIRECTION TOGGLE (BUTTON)
         // ----------------------------------------------------------------
-        static bool last_ch4_button = false;
-        static bool direction_just_changed = false;
-        if (encoder_ch4_button && !last_ch4_button) {  // Button press detected
-            // Read current motor position before changing direction
-            int32_t current_motor_position = dxl.getPresentPosition(DXL_ID);
+        // static bool last_ch4_button = false;
+        // static bool direction_just_changed = false;
+        // if (encoder_ch4_button && !last_ch4_button) {  // Button press detected
+        //     // Read current motor position before changing direction
+        //     int32_t current_motor_position = dxl.getPresentPosition(DXL_ID);
 
-            // Toggle direction
-            direction_multiplier *= -1;
+        //     // Toggle direction
+        //     direction_multiplier *= -1;
 
-            // Calculate encoder value to maintain position with new direction
-            // Solve: position = CENTER + (CH1 * SCALE * direction)
-            // CH1 = (position - CENTER) / (SCALE * direction)
-            int32_t new_encoder_value = (current_motor_position - CENTER_POSITION) / (POSITION_SCALE * direction_multiplier);
+        //     // Calculate encoder value to maintain position with new direction
+        //     // Solve: position = CENTER + (CH1 * SCALE * direction)
+        //     // CH1 = (position - CENTER) / (SCALE * direction)
+        //     int32_t new_encoder_value = (current_motor_position - CENTER_POSITION) / (POSITION_SCALE * direction_multiplier);
 
-            // Set encoder to this new value to maintain motor position
-            encoder.setEncoderValue(0, new_encoder_value);
+        //     // Set encoder to this new value to maintain motor position
+        //     encoder.setEncoderValue(0, new_encoder_value);
 
-            direction_just_changed = true;
-        }
-        last_ch4_button = encoder_ch4_button;
+        //     direction_just_changed = true;
+        // }
+        // last_ch4_button = encoder_ch4_button;
 
         // ----------------------------------------------------------------
         // RUNTIME SAFETY CLAMP FOR CH1
@@ -498,11 +498,12 @@ void loop() {
         // SEND POSITION COMMAND
         // ----------------------------------------------------------------
         // Skip sending position if direction just changed (already sent in direction toggle logic)
-        if (!direction_just_changed) {
-            dxl.setGoalPosition(DXL_ID, position);
-        } else {
-            direction_just_changed = false;  // Reset flag for next loop
-        }
+        dxl.setGoalPosition(DXL_ID, position);
+        // if (!direction_just_changed) {
+        //     dxl.setGoalPosition(DXL_ID, position);
+        // } else {
+        //     direction_just_changed = false;  // Reset flag for next loop
+        // }
 
     } else {
         // ====================================================================
@@ -525,7 +526,7 @@ void loop() {
             // CRITICAL: Always center auto mode at 2048 (center position)
             // This prevents dangerous wrap-around at 0/4095 boundary
             
-            wall_motor_position = CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE * -1);
+            wall_motor_position = CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE * direction_multiplier);
             auto_mode_center_position = wall_motor_position;
             // Start cycle timing from current position (no homing)
             dxl.setProfileVelocity(DXL_ID, auto_return_velocity);
@@ -620,18 +621,18 @@ void loop() {
         last_ch1_button = encoder_ch1_button;
 
         // CH8: DIRECTION SWAP (button only)
-        static bool last_ch8_button = false;
-        if (encoder_ch8_button && !last_ch8_button) {
-            // Get current motor position before swapping
-            int32_t current_motor_position = dxl.getPresentPosition(DXL_ID);
+        // static bool last_ch8_button = false;
+        // if (encoder_ch8_button && !last_ch8_button) {
+        //     // Get current motor position before swapping
+        //     int32_t current_motor_position = dxl.getPresentPosition(DXL_ID);
 
-            // Toggle direction
-            auto_direction_swap *= -1;
+        //     // Toggle direction
+        //     auto_direction_swap *= -1;
 
-            // Send current position to motor to prevent movement
-            // dxl.setGoalPosition(DXL_ID, current_motor_position);
-        }
-        last_ch8_button = encoder_ch8_button;
+        //     // Send current position to motor to prevent movement
+        //     // dxl.setGoalPosition(DXL_ID, current_motor_position);
+        // }
+        // last_ch8_button = encoder_ch8_button;
 
         // ----------------------------------------------------------------
         // CALCULATE CYCLE TIMING
@@ -665,7 +666,7 @@ void loop() {
             // PUSH STROKE: FAST - creates water ripple
             // ============================================================
             // Calculate position RELATIVE to center (where motor was when entering auto mode)
-            target_position = auto_mode_center_position + auto_stroke_range;
+            target_position = auto_mode_center_position - auto_stroke_range;
             target_velocity = auto_push_velocity;
             target_acceleration = auto_push_acceleration;
             // ============================================================
@@ -736,19 +737,32 @@ void loop() {
 
             M5.Display.setCursor(10, 230);
             if (encoder_ch1_value == -22) {
-                M5.Display.printf("MIN LIMIT (Pos ~3544)        ");
+                M5.Display.printf("MIN LIMIT (Pos ~552)        ");
             } else if (encoder_ch1_value == 0) {
                 M5.Display.printf("CENTER (Pos 2048)           ");
             } else if (encoder_ch1_value == 22) {
-                M5.Display.printf("MAX LIMIT (Pos ~552)       ");
+                M5.Display.printf("MAX LIMIT (Pos ~3544)       ");
             } else {
                 M5.Display.printf("Range: -22 to +22           ");
             }
 
             M5.Display.setCursor(10, 10);
-            M5.Display.printf("Motor Pos: %ld    ",
-                             present_position);
-                            
+            int wall_position_calc = CENTER_POSITION +
+            (WALL_ALIGNED_CH1 * POSITION_SCALE * direction_multiplier);
+            M5.Display.printf("Wall Pos: %d (CH1=%d)     ",
+            wall_position_calc, WALL_ALIGNED_CH1);
+
+            M5.Display.setCursor(10, 40);
+            int current_ch1_position = CENTER_POSITION +
+            (encoder_ch1_value * POSITION_SCALE *
+            direction_multiplier);
+            M5.Display.printf("CH1 Pos: %d     ",
+            current_ch1_position);
+
+            M5.Display.setCursor(10, 70);
+            M5.Display.printf("dir: %d     ",
+            direction_multiplier);
+
     } else {
         // AUTO MODE DISPLAY
         unsigned long current_time = millis();
@@ -811,17 +825,21 @@ void loop() {
         M5.Display.printf("Cycle_interval: %dms(%ld)",
                         auto_cycle_interval, encoder_ch8_value);
         
-        M5.Display.setCursor(10,30);
+        M5.Display.setCursor(10,25);
         M5.Display.printf("wall_motor_position: %d",
                         wall_motor_position);
 
-        M5.Display.setCursor(10, 60);
+        M5.Display.setCursor(10, 50);
         M5.Display.printf("auto_mode_center: %d    ",
                         auto_mode_center_position); 
 
-        M5.Display.setCursor(10, 80);
+        M5.Display.setCursor(10, 75);
         M5.Display.printf("Motor Pos: %ld    ",
                             present_position);
+
+        M5.Display.setCursor(10, 85);
+        M5.Display.printf("dir: %d     ",
+                            direction_multiplier);
                         
         M5.Display.setCursor(10, 220);
         if (stroke_angle >= 180) {
