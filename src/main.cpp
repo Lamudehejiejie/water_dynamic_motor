@@ -91,7 +91,7 @@ void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
     M5.Power.setExtOutput(true);  // turn on Grove 5V, 
-    delay(300);                   // wait a bit
+    delay(1000);                   // wait a bit
 
     for (int i = 0; i < 3; i++) {
         Wire.begin(2, 1);
