@@ -234,8 +234,10 @@ void setup() {
         M5.Display.setCursor(10, 50);
         M5.Display.println("Entering SAFE MODE...");
         M5.Display.setCursor(10, 70);
-        M5.Display.println("Motor: Auto +/-180deg");
+        M5.Display.println("Wall: 2048 (180deg)");
         M5.Display.setCursor(10, 90);
+        M5.Display.println("Stroke: -45deg only");
+        M5.Display.setCursor(10, 110);
         M5.Display.println("No manual control");
         delay(3000);
         // Continue without encoder - will use default auto mode
@@ -390,13 +392,13 @@ void loop() {
         int target_acceleration;
 
         if (time_in_cycle < push_time) {
-            // PUSH STROKE - relative to center position
-            target_position = auto_mode_center_position + (-auto_stroke_range);
+            // PUSH STROKE - push down from wall (like auto mode)
+            target_position = auto_mode_center_position - auto_stroke_range;
             target_velocity = auto_push_velocity;
             target_acceleration = auto_push_acceleration;
         } else {
-            // RETURN STROKE - relative to center position
-            target_position = auto_mode_center_position + (auto_stroke_range);
+            // RETURN STROKE - return to wall position (like auto mode)
+            target_position = auto_mode_center_position;
             target_velocity = auto_return_velocity;
             target_acceleration = auto_return_acceleration;
         }
@@ -426,12 +428,14 @@ void loop() {
         M5.Display.setCursor(10, 110);
         M5.Display.printf("=== SAFE MODE (AUTO) ===     ");
         M5.Display.setCursor(10, 130);
-        M5.Display.printf("Target: %d (+-%ddeg)      ", target_position, (auto_stroke_range * 360) / MAX_POSITION);
+        M5.Display.printf("Wall: %d  Stroke: -%ddeg      ", auto_mode_center_position, (auto_stroke_range * 360) / MAX_POSITION);
         M5.Display.setCursor(10, 150);
-        M5.Display.printf("Current: %d       ", present_position);
+        M5.Display.printf("Target: %d       ", target_position);
         M5.Display.setCursor(10, 170);
-        M5.Display.printf("Vel: %d  Move: %s      ", present_velocity, moving_status ? "YES" : "NO");
+        M5.Display.printf("Current: %d       ", present_position);
         M5.Display.setCursor(10, 190);
+        M5.Display.printf("Vel: %d  Move: %s      ", present_velocity, moving_status ? "YES" : "NO");
+        M5.Display.setCursor(10, 210);
         M5.Display.printf("V:%d A:%d      ", target_velocity, target_acceleration);
 
         delay(1000/120.);
@@ -714,6 +718,11 @@ void loop() {
         bool currently_in_push = (time_in_cycle < push_time);
         if (currently_in_push && ! was_in_push_last_loop)
         {
+            // Advance Perlin noise for new cycle (only once per cycle!)
+            perlin_velocity.advance();
+            perlin_stroke.advance();
+            perlin_interval.advance();
+
             // Apply Perlin noise to interval with safety limits
             int interval_with_noise = auto_cycle_interval + (int)(perlin_int * perlin_intensity_interval);
             // Safety: Keep interval within reasonable bounds
@@ -739,11 +748,6 @@ void loop() {
         if (auto_mode_center_position - stroke_with_noise < 0) {
             stroke_with_noise = auto_mode_center_position;  // Limit to prevent negative position
         }
-
-        // Advance Perlin noise time for next cycle
-        perlin_velocity.advance();
-        perlin_stroke.advance();
-        perlin_interval.advance();
 
         // ----------------------------------------------------------------
         // STATE MACHINE: PUSH vs RETURN STROKE
