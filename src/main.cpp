@@ -5,6 +5,63 @@
 #include <Dynamixel2Arduino.h>   // ROBOTIS library for Dynamixel motor control
 #include <UNIT_8ENCODER.h>       // M5Stack 8-Encoder Unit library
 
+// ============================================================================
+// SIMPLE PERLIN NOISE - Smooth organic randomness for natural motion
+// ============================================================================
+class SimplePerlin {
+private:
+    float time_offset;
+    float frequency;
+
+    // Smooth interpolation function (smoothstep)
+    float smoothstep(float t) {
+        return t * t * (3.0 - 2.0 * t);
+    }
+
+    // Simple pseudo-random function based on sine
+    float noise(float x) {
+        float n = sin(x * 12.9898 + x * 78.233) * 43758.5453;
+        return n - floor(n);  // Return fractional part (0 to 1)
+    }
+
+public:
+    SimplePerlin(float initial_offset, float freq) {
+        time_offset = initial_offset;
+        frequency = freq;
+    }
+
+    // Get smooth noise value between -1.0 and +1.0
+    float getValue() {
+        // Get integer and fractional parts
+        float i = floor(time_offset);
+        float f = time_offset - i;
+
+        // Get two noise values to interpolate between
+        float n1 = noise(i);
+        float n2 = noise(i + 1.0);
+
+        // Smooth interpolation
+        float t = smoothstep(f);
+        float value = n1 + t * (n2 - n1);
+
+        // Convert from 0-1 range to -1 to +1 range
+        return (value * 2.0) - 1.0;
+    }
+
+    void advance() {
+        time_offset += frequency;
+    }
+};
+
+SimplePerlin perlin_velocity(0.0, 0.01);
+SimplePerlin perlin_stroke(100.0, 0.008);
+SimplePerlin perlin_interval(200.0, 0.012);
+
+// Perlin noise intensity parameters (hard-coded, tune these for desired effect)
+float perlin_intensity_velocity = 0.2;    // ±15% velocity variation
+float perlin_intensity_stroke = 50;        // ±50 units stroke variation
+float perlin_intensity_interval = 200;     // ±200ms interval variation
+
 
 // The flow: M5Stack (TTL) → DMX Base (TTL→RS485) → Motor (RS485)
 // M5Stack DMX Base Pin Configuration for CoreS3:
@@ -49,14 +106,22 @@ const int MAX_POSITION = 4095;     // XW540-T260-R: 4095 = 360° (one full rotat
 const int CENTER_POSITION = 2048;  // Center position (180°) - safe starting point
 const int MAX_POSITION_LIMIT = 4095;  // Hard limit: never exceed one full rotation
                                    // 0 = 0°, 2048 = 180°, 4095 = 360°
-//tenkii, change here!                    
-const int ENCODER_CH1_RANGE = 22;  // CH1 encoder range: -22 to +22 (44 clicks total, safety limited)
-const int POSITION_SCALE = 68;     // Scale factor: 4095/60 ≈ 68 (same scale as ±30, just limited range)
-const int WALL_ALIGNED_CH1 = 20;
+//tenkii, change here!
+const int ENCODER_CH1_RANGE = 44;  // CH1 encoder range: -44 to +44(44 clicks total, safety limited)
+const int POSITION_SCALE = 34;     // Scale factor: 34 (0.5x for higher resolution control)
+
+// ============================================================================
+// WALL POSITION & SAFE LOCK POSITION
+// ============================================================================
+
+const int WALL_ALIGNED_CH1 = 0;  // Wall position at CH1=0 (center position 2048)
+const int MANUAL_LOCK_POSITION = CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE);
+
 // Manual mode control variables
 int current_velocity = 0;          // Track current velocity setting
 int current_acceleration = 0;      // Track current acceleration setting
-const int direction_multiplier = 1;      // Direction: 1 = FWD, -1 = REV
+// const int direction_multiplier = 1;      // Direction: 1 = FWD, -1 = REV
+bool position_limit_locked = true;       // Safety lock: prevents going below position 0 in manual mode
 
 // Auto mode control variables
 unsigned long cycle_start_time = 0;     // When current cycle started
@@ -77,7 +142,7 @@ int auto_push_acceleration = 500;       // Fast push acceleration (100-5000) - C
 int auto_return_velocity = 100;         // Slow return velocity (50-500) - CH4
 int auto_return_acceleration = 100;     // Slow return acceleration (10-1000) - CH5
 int auto_push_ratio = 33;               // Push time as % of cycle (5-90%) - CH6 
-int auto_direction_swap = 1;           // Direction multiplier: 1=normal, -1=swapped - CH7
+//int auto_direction_swap = 1;           // Direction multiplier: 1=normal, -1=swapped - CH7
 int auto_stroke_range = 512;           // Stroke range in units (±45°) - CH8 - 
 
 //random function
@@ -177,7 +242,6 @@ void setup() {
     }
 
     Serial1.begin(DXL_BAUD_RATE, SERIAL_8N1, RXD_PIN, TXD_PIN);
-
 
     dxl.begin(DXL_BAUD_RATE);
     dxl.setPortProtocolVersion(DXL_PROTOCOL_VERSION);
@@ -327,12 +391,12 @@ void loop() {
 
         if (time_in_cycle < push_time) {
             // PUSH STROKE - relative to center position
-            target_position = auto_mode_center_position + (-auto_stroke_range * auto_direction_swap);
+            target_position = auto_mode_center_position + (-auto_stroke_range);
             target_velocity = auto_push_velocity;
             target_acceleration = auto_push_acceleration;
         } else {
             // RETURN STROKE - relative to center position
-            target_position = auto_mode_center_position + (auto_stroke_range * auto_direction_swap);
+            target_position = auto_mode_center_position + (auto_stroke_range);
             target_velocity = auto_return_velocity;
             target_acceleration = auto_return_acceleration;
         }
@@ -420,33 +484,19 @@ void loop() {
         }
 
         // ----------------------------------------------------------------
-        // ENCODER CH4: DIRECTION TOGGLE (BUTTON)
+        // ENCODER CH4: SAFETY LOCK TOGGLE (BUTTON)
         // ----------------------------------------------------------------
-        // static bool last_ch4_button = false;
-        // static bool direction_just_changed = false;
-        // if (encoder_ch4_button && !last_ch4_button) {  // Button press detected
-        //     // Read current motor position before changing direction
-        //     int32_t current_motor_position = dxl.getPresentPosition(DXL_ID);
-
-        //     // Toggle direction
-        //     direction_multiplier *= -1;
-
-        //     // Calculate encoder value to maintain position with new direction
-        //     // Solve: position = CENTER + (CH1 * SCALE * direction)
-        //     // CH1 = (position - CENTER) / (SCALE * direction)
-        //     int32_t new_encoder_value = (current_motor_position - CENTER_POSITION) / (POSITION_SCALE * direction_multiplier);
-
-        //     // Set encoder to this new value to maintain motor position
-        //     encoder.setEncoderValue(0, new_encoder_value);
-
-        //     direction_just_changed = true;
-        // }
-        // last_ch4_button = encoder_ch4_button;
+        // Toggle safety lock to allow/prevent going below position 0
+        static bool last_ch4_button = false;
+        if (encoder_ch4_button && !last_ch4_button) {
+            position_limit_locked = !position_limit_locked;  // Toggle lock state
+        }
+        last_ch4_button = encoder_ch4_button;
 
         // ----------------------------------------------------------------
         // RUNTIME SAFETY CLAMP FOR CH1
         // ----------------------------------------------------------------
-        // Safety check: Limit CH1 to ±22 range
+        // Safety check: Limit CH1 to ±44 range
         if (encoder_ch1_value < -ENCODER_CH1_RANGE) {
             encoder.setEncoderValue(0, -ENCODER_CH1_RANGE);
             encoder_ch1_value = -ENCODER_CH1_RANGE;
@@ -458,11 +508,16 @@ void loop() {
         // ----------------------------------------------------------------
         // ENCODER CH1: POSITION CONTROL (centered at 2048)
         // ----------------------------------------------------------------
-        // Formula: position = 2048 + (CH1 * 68 * direction)
-        // CH1=-22 → position ≈ 552 (safety margin from 0)
-        // CH1=0   → position = 2048 (center)
-        // CH1=+22 → position ≈ 3544 (safety margin from 4095)
-        int position = CENTER_POSITION + (encoder_ch1_value * POSITION_SCALE * direction_multiplier);
+        // Formula: position = 2048 + (CH1 * 34)
+        // CH1=-44 → position = 2048 - 1496 = 552 (safety margin from 0)
+        // CH1=0   → position = 2048 (center/wall)
+        // CH1=+44 → position = 2048 + 1496 = 3544 (safety margin from 4095)
+        int position = CENTER_POSITION + (encoder_ch1_value * POSITION_SCALE);
+
+        // Safety lock: prevent going beyond wall (2048) if locked
+        if (position_limit_locked && position > MANUAL_LOCK_POSITION) {
+            position = MANUAL_LOCK_POSITION;
+        }
 
         // Hard limit to prevent wrap-around (CRITICAL SAFETY!)
         if (position < 0) position = 0;
@@ -526,7 +581,7 @@ void loop() {
             // CRITICAL: Always center auto mode at 2048 (center position)
             // This prevents dangerous wrap-around at 0/4095 boundary
             
-            wall_motor_position = CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE * direction_multiplier);
+            wall_motor_position = CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE);
             auto_mode_center_position = wall_motor_position;
             // Start cycle timing from current position (no homing)
             dxl.setProfileVelocity(DXL_ID, auto_return_velocity);
@@ -546,7 +601,7 @@ void loop() {
         // Update auto mode parameters from encoder values
         if (!auto_mode_homed)
         {
-            //int wall_motor_position = CENTER_POSITION +  (WALL_ALIGNED_CH1 * POSITION_SCALE * direction_multiplier);
+            //int wall_motor_position = CENTER_POSITION +  (WALL_ALIGNED_CH1 * POSITION_SCALE);
             int32_t current_pos = dxl.getPresentPosition(DXL_ID);
             if (abs(current_pos - wall_motor_position) < 10)
             {
@@ -599,7 +654,10 @@ void loop() {
 
             // CH7: STROKE RANGE (adjust from default 512 units/45°, range: 512-2048 units/45-180°)
             auto_stroke_range = 512 + (encoder_ch7_value * 12);
-            const int MAX_STROKE_LIMIT = 2048;  // Maximum 2048 to prevent exceeding 0-4095 range when centered at 2048
+            // ============================================================================
+            // MAX_STROKE_LIMIT!!
+            // ============================================================================
+            const int MAX_STROKE_LIMIT = MANUAL_LOCK_POSITION;  // Maximum 2048 to prevent exceeding 0-4095 range when centered at 2048
             if (auto_stroke_range > MAX_STROKE_LIMIT) auto_stroke_range = MAX_STROKE_LIMIT;
             if (auto_stroke_range < 8) auto_stroke_range = 8;
 
@@ -643,16 +701,49 @@ void loop() {
 
         static bool was_in_push_last_loop = false;
 
+        // ----------------------------------------------------------------
+        // APPLY PERLIN NOISE - Add organic variation to motion
+        // ----------------------------------------------------------------
+        // Get current Perlin noise values (-1.0 to +1.0)
+        float perlin_vel = perlin_velocity.getValue();
+        float perlin_str = perlin_stroke.getValue();
+        float perlin_int = perlin_interval.getValue();
+
         // Calculate push and return times based on ratio
         int push_time = (auto_cycle_time * auto_push_ratio) / 100;
         bool currently_in_push = (time_in_cycle < push_time);
         if (currently_in_push && ! was_in_push_last_loop)
         {
-            delay(auto_cycle_interval);
+            // Apply Perlin noise to interval with safety limits
+            int interval_with_noise = auto_cycle_interval + (int)(perlin_int * perlin_intensity_interval);
+            // Safety: Keep interval within reasonable bounds
+            if (interval_with_noise < 0) interval_with_noise = 0;
+            if (interval_with_noise > 5000) interval_with_noise = 5000;
+
+            delay(interval_with_noise);
         }
         was_in_push_last_loop = currently_in_push;
 
         int return_time = auto_cycle_time - push_time;
+
+        // Apply Perlin noise to stroke range with safety limits
+        int stroke_with_noise = auto_stroke_range + (int)(perlin_str * perlin_intensity_stroke);
+
+        // Safety limit 1: Keep stroke within reasonable bounds
+        if (stroke_with_noise < 8) stroke_with_noise = 8;
+        if (stroke_with_noise > 2048) stroke_with_noise = 2048;
+
+        // Safety limit 2: Ensure resulting position won't go below 0
+        // Position will be: auto_mode_center_position - stroke_with_noise
+        // Must ensure: auto_mode_center_position - stroke_with_noise >= 0
+        if (auto_mode_center_position - stroke_with_noise < 0) {
+            stroke_with_noise = auto_mode_center_position;  // Limit to prevent negative position
+        }
+
+        // Advance Perlin noise time for next cycle
+        perlin_velocity.advance();
+        perlin_stroke.advance();
+        perlin_interval.advance();
 
         // ----------------------------------------------------------------
         // STATE MACHINE: PUSH vs RETURN STROKE
@@ -665,22 +756,34 @@ void loop() {
             // ============================================================
             // PUSH STROKE: FAST - creates water ripple
             // ============================================================
-            // Calculate position RELATIVE to center (where motor was when entering auto mode)
-            target_position = auto_mode_center_position - auto_stroke_range;
-            target_velocity = auto_push_velocity;
+            // Calculate position with Perlin noise variation on stroke
+            target_position = auto_mode_center_position - stroke_with_noise;
+
+            // Apply Perlin noise to push velocity (multiplicative)
+            float velocity_multiplier = 1.0 + (perlin_vel * perlin_intensity_velocity);
+            target_velocity = (int)(auto_push_velocity * velocity_multiplier);
+            if (target_velocity < 10) target_velocity = 10;
+            if (target_velocity > 1000) target_velocity = 1000;
+
             target_acceleration = auto_push_acceleration;
             // ============================================================
             // PUSH from the wall
             // ============================================================
-            
-            
+
+
         } else {
             // ============================================================
             // RETURN STROKE: SLOW - gentle return
             // ============================================================
-            // Calculate position RELATIVE to center (where motor was when entering auto mode)
+            // Return to wall position (center)
             target_position = auto_mode_center_position;
-            target_velocity = auto_return_velocity;
+
+            // Apply Perlin noise to return velocity too
+            float velocity_multiplier = 1.0 + (perlin_vel * perlin_intensity_velocity);
+            target_velocity = (int)(auto_return_velocity * velocity_multiplier);
+            if (target_velocity < 10) target_velocity = 10;
+            if (target_velocity > 1000) target_velocity = 1000;
+
             target_acceleration = auto_return_acceleration;
         }
 
@@ -736,32 +839,29 @@ void loop() {
             M5.Display.printf("Encoder CH1: %ld          ", encoder_ch1_value);
 
             M5.Display.setCursor(10, 230);
-            if (encoder_ch1_value == -22) {
-                M5.Display.printf("MIN LIMIT (Pos ~552)        ");
+            if (encoder_ch1_value == -44) {
+                M5.Display.printf("MIN (-44) Lock:%s         ", position_limit_locked ? "ON" : "OFF");
             } else if (encoder_ch1_value == 0) {
-                M5.Display.printf("CENTER (Pos 2048)           ");
-            } else if (encoder_ch1_value == 22) {
-                M5.Display.printf("MAX LIMIT (Pos ~3544)       ");
+                M5.Display.printf("WALL (0) Lock:%s          ", position_limit_locked ? "ON" : "OFF");
+            } else if (encoder_ch1_value == 44) {
+                M5.Display.printf("MAX (+44) Lock:%s         ", position_limit_locked ? "ON" : "OFF");
             } else {
-                M5.Display.printf("Range: -22 to +22           ");
+                M5.Display.printf("CH1:%ld Lock:%s           ", encoder_ch1_value, position_limit_locked ? "ON" : "OFF");
             }
 
             M5.Display.setCursor(10, 10);
             int wall_position_calc = CENTER_POSITION +
-            (WALL_ALIGNED_CH1 * POSITION_SCALE * direction_multiplier);
+            (WALL_ALIGNED_CH1 * POSITION_SCALE);
             M5.Display.printf("Wall Pos: %d (CH1=%d)     ",
             wall_position_calc, WALL_ALIGNED_CH1);
 
             M5.Display.setCursor(10, 40);
             int current_ch1_position = CENTER_POSITION +
-            (encoder_ch1_value * POSITION_SCALE *
-            direction_multiplier);
+            (encoder_ch1_value * POSITION_SCALE);
             M5.Display.printf("CH1 Pos: %d     ",
             current_ch1_position);
 
-            M5.Display.setCursor(10, 70);
-            M5.Display.printf("dir: %d     ",
-            direction_multiplier);
+
 
     } else {
         // AUTO MODE DISPLAY
@@ -800,11 +900,11 @@ void loop() {
 
         M5.Display.setCursor(10, 140);
         if (time_in_cycle < push_time) {
-            M5.Display.printf("PUSH  Dir:%s  Prog:%d%%    ",
-                              auto_direction_swap == 1 ? "NORM" : "SWAP", cycle_progress);
+            M5.Display.printf("PUSH    Prog:%d%%    ",
+                            cycle_progress);
         } else {
-            M5.Display.printf("RETURN Dir:%s Prog:%d%%   ",
-                              auto_direction_swap == 1 ? "NORM" : "SWAP", cycle_progress);
+            M5.Display.printf("RETURN  Prog:%d%%   ",
+                            cycle_progress);
         }
 
         M5.Display.setCursor(10, 160);
@@ -837,9 +937,7 @@ void loop() {
         M5.Display.printf("Motor Pos: %ld    ",
                             present_position);
 
-        M5.Display.setCursor(10, 85);
-        M5.Display.printf("dir: %d     ",
-                            direction_multiplier);
+
                         
         M5.Display.setCursor(10, 220);
         if (stroke_angle >= 180) {
