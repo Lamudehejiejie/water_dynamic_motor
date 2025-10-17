@@ -1,0 +1,672 @@
+// ============================================================================
+// SCENE PROFILE ARCHITECTURE - Water Ripple Installation Art
+// ============================================================================
+// This file contains the design and placeholder implementation for a scene
+// management system that allows pre-programmed motion profiles for exhibition.
+//
+// Design Goals:
+// - Store 10+ different scene profiles with unique motion characteristics
+// - Each scene has: duration, stroke range, velocities, timing, Perlin intensity
+// - Smooth or sudden transitions between scenes
+// - Exhibition mode: plays scenes sequentially with optional randomization
+// - Easy to add/edit scenes without recompiling (future: SD card JSON)
+// ============================================================================
+
+#include <M5Unified.h>
+#include <Dynamixel2Arduino.h>
+
+// ============================================================================
+// SCENE PROFILE DATA STRUCTURE
+// ============================================================================
+
+struct SceneProfile {
+    // Scene metadata
+    const char* name;              // Human-readable scene name (e.g., "Gentle Waves")
+    int duration_min;              // Minimum duration in seconds (e.g., 30)
+    int duration_max;              // Maximum duration in seconds (e.g., 60)
+
+    // Motion parameters - Base values (before Perlin noise)
+    int cycle_time;                // Total cycle time in ms (1000-8000)
+    int push_velocity;             // Fast push velocity (10-600)
+    int push_acceleration;         // Fast push acceleration (10-600)
+    int return_velocity;           // Slow return velocity (10-600)
+    int return_acceleration;       // Slow return acceleration (10-600)
+    int push_ratio;                // Push time as % of cycle (5-90)
+    int stroke_range;              // Stroke range in units (8-2048)
+    int cycle_interval;            // Delay between cycles in ms (0-5000)
+
+    // Perlin noise intensities - How much organic variation to add
+    float perlin_intensity_velocity;   // ±% velocity variation (0.0-1.0)
+    float perlin_intensity_stroke;     // ± units stroke variation (0-200)
+    float perlin_intensity_interval;   // ± ms interval variation (0-1000)
+
+    // Perlin noise frequencies - How fast the noise changes
+    float perlin_freq_velocity;        // Velocity noise frequency (0.001-0.1)
+    float perlin_freq_stroke;          // Stroke noise frequency (0.001-0.1)
+    float perlin_freq_interval;        // Interval noise frequency (0.001-0.1)
+
+    // Transition behavior
+    enum TransitionType {
+        SUDDEN,      // Jump to new scene immediately
+        FADE_SLOW,   // Blend over 5-10 seconds
+        FADE_FAST    // Blend over 1-2 seconds
+    };
+    TransitionType transition_in;      // How to enter this scene
+};
+
+// ============================================================================
+// SCENE LIBRARY - Pre-defined motion profiles
+// ============================================================================
+
+const SceneProfile SCENE_LIBRARY[] = {
+
+    // ========================================================================
+    // Scene 0: "Calm Breath" - Very slow, minimal movement, meditative
+    // ========================================================================
+    {
+        .name = "Calm Breath",
+        .duration_min = 45,
+        .duration_max = 90,
+
+        // Slow, gentle motion
+        .cycle_time = 6000,            // 6 second cycles
+        .push_velocity = 100,          // Very slow push
+        .push_acceleration = 50,       // Soft acceleration
+        .return_velocity = 80,         // Very slow return
+        .return_acceleration = 40,     // Soft return
+        .push_ratio = 40,              // 40% push, 60% return
+        .stroke_range = 300,           // Small stroke (~26°)
+        .cycle_interval = 3000,        // 3 second pause between cycles
+
+        // Minimal variation - very stable
+        .perlin_intensity_velocity = 0.05,   // ±5% velocity variation
+        .perlin_intensity_stroke = 20,       // ±20 units stroke
+        .perlin_intensity_interval = 500,    // ±500ms interval
+
+        // Very slow noise changes
+        .perlin_freq_velocity = 0.003,
+        .perlin_freq_stroke = 0.002,
+        .perlin_freq_interval = 0.005,
+
+        .transition_in = SceneProfile::FADE_SLOW
+    },
+
+    // ========================================================================
+    // Scene 1: "Morning Ripples" - Moderate, pleasant, awakening energy
+    // ========================================================================
+    {
+        .name = "Morning Ripples",
+        .duration_min = 30,
+        .duration_max = 60,
+
+        // Moderate motion
+        .cycle_time = 3500,
+        .push_velocity = 300,
+        .push_acceleration = 200,
+        .return_velocity = 120,
+        .return_acceleration = 100,
+        .push_ratio = 30,
+        .stroke_range = 512,           // Medium stroke (~45°)
+        .cycle_interval = 1500,
+
+        // Moderate variation
+        .perlin_intensity_velocity = 0.15,   // ±15% velocity variation
+        .perlin_intensity_stroke = 50,       // ±50 units stroke
+        .perlin_intensity_interval = 300,    // ±300ms interval
+
+        .perlin_freq_velocity = 0.01,
+        .perlin_freq_stroke = 0.008,
+        .perlin_freq_interval = 0.012,
+
+        .transition_in = SceneProfile::FADE_FAST
+    },
+
+    // ========================================================================
+    // Scene 2: "Playful Dance" - Fast, energetic, joyful movement
+    // ========================================================================
+    {
+        .name = "Playful Dance",
+        .duration_min = 20,
+        .duration_max = 40,
+
+        // Fast, dynamic motion
+        .cycle_time = 2000,            // Quick 2 second cycles
+        .push_velocity = 550,          // Fast push
+        .push_acceleration = 450,      // Snappy acceleration
+        .return_velocity = 200,        // Moderate return
+        .return_acceleration = 180,
+        .push_ratio = 25,              // Quick push, longer return
+        .stroke_range = 800,           // Large stroke (~70°)
+        .cycle_interval = 500,         // Short pause
+
+        // High variation - very organic
+        .perlin_intensity_velocity = 0.30,   // ±30% velocity variation
+        .perlin_intensity_stroke = 100,      // ±100 units stroke
+        .perlin_intensity_interval = 200,    // ±200ms interval
+
+        // Faster noise changes
+        .perlin_freq_velocity = 0.02,
+        .perlin_freq_stroke = 0.015,
+        .perlin_freq_interval = 0.025,
+
+        .transition_in = SceneProfile::SUDDEN
+    },
+
+    // ========================================================================
+    // Scene 3: "Ocean Swell" - Deep, powerful, rhythmic waves
+    // ========================================================================
+    {
+        .name = "Ocean Swell",
+        .duration_min = 40,
+        .duration_max = 80,
+
+        // Strong, deep motion
+        .cycle_time = 5000,            // Slow 5 second cycles
+        .push_velocity = 450,          // Powerful push
+        .push_acceleration = 400,      // Strong acceleration
+        .return_velocity = 100,        // Very slow return (like water settling)
+        .return_acceleration = 80,
+        .push_ratio = 20,              // 20% fast push, 80% slow return
+        .stroke_range = 1500,          // Very large stroke (~131°)
+        .cycle_interval = 2000,
+
+        // Moderate-high variation
+        .perlin_intensity_velocity = 0.20,
+        .perlin_intensity_stroke = 80,
+        .perlin_intensity_interval = 400,
+
+        .perlin_freq_velocity = 0.008,
+        .perlin_freq_stroke = 0.006,
+        .perlin_freq_interval = 0.010,
+
+        .transition_in = SceneProfile::FADE_SLOW
+    },
+
+    // ========================================================================
+    // Scene 4: "Rainfall" - Irregular, unpredictable, natural randomness
+    // ========================================================================
+    {
+        .name = "Rainfall",
+        .duration_min = 25,
+        .duration_max = 50,
+
+        // Irregular motion with high variation
+        .cycle_time = 2500,
+        .push_velocity = 400,
+        .push_acceleration = 350,
+        .return_velocity = 150,
+        .return_acceleration = 120,
+        .push_ratio = 35,
+        .stroke_range = 600,
+        .cycle_interval = 800,         // Shorter interval
+
+        // VERY HIGH variation - chaotic natural feel
+        .perlin_intensity_velocity = 0.40,   // ±40% velocity variation
+        .perlin_intensity_stroke = 150,      // ±150 units stroke
+        .perlin_intensity_interval = 600,    // ±600ms interval (creates irregular timing)
+
+        // Fast, chaotic noise changes
+        .perlin_freq_velocity = 0.03,
+        .perlin_freq_stroke = 0.025,
+        .perlin_freq_interval = 0.04,
+
+        .transition_in = SceneProfile::SUDDEN
+    },
+
+    // ========================================================================
+    // Scene 5: "Meditation" - Ultra slow, almost static, zen-like
+    // ========================================================================
+    {
+        .name = "Meditation",
+        .duration_min = 60,
+        .duration_max = 120,
+
+        // Extremely slow, barely moving
+        .cycle_time = 8000,            // 8 second cycles (maximum)
+        .push_velocity = 50,           // Barely moving
+        .push_acceleration = 30,
+        .return_velocity = 40,
+        .return_acceleration = 25,
+        .push_ratio = 50,              // Even split
+        .stroke_range = 200,           // Tiny stroke (~17°)
+        .cycle_interval = 5000,        // Long pause (5 seconds)
+
+        // Minimal variation - almost no randomness
+        .perlin_intensity_velocity = 0.02,   // ±2% velocity variation
+        .perlin_intensity_stroke = 10,       // ±10 units stroke
+        .perlin_intensity_interval = 1000,   // ±1000ms interval
+
+        // Ultra-slow noise changes
+        .perlin_freq_velocity = 0.001,
+        .perlin_freq_stroke = 0.0008,
+        .perlin_freq_interval = 0.002,
+
+        .transition_in = SceneProfile::FADE_SLOW
+    },
+
+    // ========================================================================
+    // Scene 6: "Storm Building" - Gradually increasing intensity
+    // ========================================================================
+    {
+        .name = "Storm Building",
+        .duration_min = 30,
+        .duration_max = 60,
+
+        // Fast, building energy
+        .cycle_time = 2200,
+        .push_velocity = 500,
+        .push_acceleration = 450,
+        .return_velocity = 180,
+        .return_acceleration = 150,
+        .push_ratio = 22,
+        .stroke_range = 1000,
+        .cycle_interval = 400,
+
+        // High variation
+        .perlin_intensity_velocity = 0.35,
+        .perlin_intensity_stroke = 120,
+        .perlin_intensity_interval = 300,
+
+        .perlin_freq_velocity = 0.025,
+        .perlin_freq_stroke = 0.020,
+        .perlin_freq_interval = 0.030,
+
+        .transition_in = SceneProfile::FADE_FAST
+    },
+
+    // ========================================================================
+    // Scene 7: "Gentle Lapping" - Soft, repetitive, soothing rhythm
+    // ========================================================================
+    {
+        .name = "Gentle Lapping",
+        .duration_min = 40,
+        .duration_max = 70,
+
+        // Gentle, rhythmic motion
+        .cycle_time = 4000,
+        .push_velocity = 250,
+        .push_acceleration = 150,
+        .return_velocity = 90,
+        .return_acceleration = 70,
+        .push_ratio = 35,
+        .stroke_range = 400,
+        .cycle_interval = 1800,
+
+        // Low variation - predictable rhythm
+        .perlin_intensity_velocity = 0.10,
+        .perlin_intensity_stroke = 30,
+        .perlin_intensity_interval = 400,
+
+        .perlin_freq_velocity = 0.006,
+        .perlin_freq_stroke = 0.005,
+        .perlin_freq_interval = 0.008,
+
+        .transition_in = SceneProfile::FADE_SLOW
+    },
+
+    // ========================================================================
+    // Scene 8: "Heartbeat" - Rhythmic pulse with double-beat pattern
+    // ========================================================================
+    {
+        .name = "Heartbeat",
+        .duration_min = 30,
+        .duration_max = 50,
+
+        // Quick double-pulse feel
+        .cycle_time = 1800,            // Fast cycle
+        .push_velocity = 450,
+        .push_acceleration = 400,
+        .return_velocity = 200,
+        .return_acceleration = 180,
+        .push_ratio = 30,
+        .stroke_range = 500,
+        .cycle_interval = 200,         // Very short pause (creates "double beat" feel)
+
+        // Moderate variation
+        .perlin_intensity_velocity = 0.12,
+        .perlin_intensity_stroke = 40,
+        .perlin_intensity_interval = 100,  // Low interval variation (keeps rhythm)
+
+        .perlin_freq_velocity = 0.015,
+        .perlin_freq_stroke = 0.012,
+        .perlin_freq_interval = 0.018,
+
+        .transition_in = SceneProfile::SUDDEN
+    },
+
+    // ========================================================================
+    // Scene 9: "Tidal Flow" - Long, sweeping movements with pauses
+    // ========================================================================
+    {
+        .name = "Tidal Flow",
+        .duration_min = 50,
+        .duration_max = 90,
+
+        // Long, sweeping motion
+        .cycle_time = 7000,            // Long 7 second cycles
+        .push_velocity = 300,
+        .push_acceleration = 200,
+        .return_velocity = 60,         // Very slow return (like tide receding)
+        .return_acceleration = 50,
+        .push_ratio = 15,              // 15% push, 85% return
+        .stroke_range = 1200,          // Large stroke
+        .cycle_interval = 3500,        // Long pause
+
+        // Low-moderate variation
+        .perlin_intensity_velocity = 0.08,
+        .perlin_intensity_stroke = 60,
+        .perlin_intensity_interval = 800,
+
+        .perlin_freq_velocity = 0.004,
+        .perlin_freq_stroke = 0.003,
+        .perlin_freq_interval = 0.006,
+
+        .transition_in = SceneProfile::FADE_SLOW
+    },
+
+    // ========================================================================
+    // Scene 10: "Chaos Theory" - Extreme randomness, unpredictable beauty
+    // ========================================================================
+    {
+        .name = "Chaos Theory",
+        .duration_min = 15,
+        .duration_max = 30,
+
+        // Highly variable motion
+        .cycle_time = 3000,
+        .push_velocity = 400,
+        .push_acceleration = 300,
+        .return_velocity = 150,
+        .return_acceleration = 120,
+        .push_ratio = 30,
+        .stroke_range = 700,
+        .cycle_interval = 1000,
+
+        // MAXIMUM variation - fully chaotic
+        .perlin_intensity_velocity = 0.50,   // ±50% velocity variation
+        .perlin_intensity_stroke = 200,      // ±200 units stroke (MAXIMUM)
+        .perlin_intensity_interval = 800,    // ±800ms interval
+
+        // Very fast noise changes
+        .perlin_freq_velocity = 0.05,
+        .perlin_freq_stroke = 0.04,
+        .perlin_freq_interval = 0.06,
+
+        .transition_in = SceneProfile::SUDDEN
+    }
+};
+
+const int SCENE_COUNT = sizeof(SCENE_LIBRARY) / sizeof(SceneProfile);
+
+// ============================================================================
+// SCENE MANAGER - Controls scene playback and transitions
+// ============================================================================
+
+class SceneManager {
+private:
+    int current_scene_index;           // Which scene is playing now
+    unsigned long scene_start_time;    // When current scene started
+    int scene_duration;                // How long current scene will play (randomized)
+    bool exhibition_mode_active;       // Are we in exhibition mode?
+
+    // Transition state
+    bool in_transition;
+    unsigned long transition_start_time;
+    int transition_duration_ms;
+    SceneProfile::TransitionType transition_type;
+
+    // Previous scene parameters (for blending)
+    int prev_cycle_time;
+    int prev_push_velocity;
+    int prev_push_acceleration;
+    int prev_return_velocity;
+    int prev_return_acceleration;
+    int prev_push_ratio;
+    int prev_stroke_range;
+    int prev_cycle_interval;
+    float prev_perlin_intensity_velocity;
+    float prev_perlin_intensity_stroke;
+    float prev_perlin_intensity_interval;
+
+public:
+    SceneManager() {
+        current_scene_index = 0;
+        scene_start_time = 0;
+        scene_duration = 0;
+        exhibition_mode_active = false;
+        in_transition = false;
+    }
+
+    // ========================================================================
+    // PLACEHOLDER: Start exhibition mode
+    // ========================================================================
+    void startExhibitionMode() {
+        // TODO: Implement exhibition mode startup
+        // - Set exhibition_mode_active = true
+        // - Load first scene (index 0)
+        // - Randomize scene duration within min/max range
+        // - Initialize scene_start_time
+        // - Apply scene parameters to motor
+
+        exhibition_mode_active = true;
+        current_scene_index = 0;
+        loadScene(current_scene_index);
+    }
+
+    // ========================================================================
+    // PLACEHOLDER: Stop exhibition mode
+    // ========================================================================
+    void stopExhibitionMode() {
+        // TODO: Implement exhibition mode shutdown
+        // - Set exhibition_mode_active = false
+        // - Return to manual/default auto mode
+        // - Save current motor state
+
+        exhibition_mode_active = false;
+    }
+
+    // ========================================================================
+    // PLACEHOLDER: Load a specific scene
+    // ========================================================================
+    void loadScene(int scene_index) {
+        // TODO: Implement scene loading
+        // - Validate scene_index (0 to SCENE_COUNT-1)
+        // - Store previous scene parameters for transition
+        // - Load new scene from SCENE_LIBRARY
+        // - Randomize scene duration between min/max
+        // - Initialize Perlin noise with new frequencies
+        // - Start transition if needed
+        // - Apply parameters to motor system
+
+        if (scene_index < 0 || scene_index >= SCENE_COUNT) {
+            return;  // Invalid scene index
+        }
+
+        const SceneProfile& scene = SCENE_LIBRARY[scene_index];
+
+        // Save previous parameters for transition blending
+        // prev_cycle_time = auto_cycle_time;
+        // prev_push_velocity = auto_push_velocity;
+        // ... etc
+
+        // Randomize duration
+        scene_duration = random(scene.duration_min, scene.duration_max + 1) * 1000;  // Convert to ms
+        scene_start_time = millis();
+        current_scene_index = scene_index;
+
+        // TODO: Apply scene parameters to global motor control variables
+        // TODO: Reinitialize Perlin noise generators with new frequencies
+        // TODO: Start transition if needed
+    }
+
+    // ========================================================================
+    // PLACEHOLDER: Update - call this every loop
+    // ========================================================================
+    void update() {
+        // TODO: Implement scene manager update logic
+        // - Check if exhibition mode is active
+        // - Check if current scene duration has expired
+        // - If expired, load next scene (increment with wraparound)
+        // - Handle transitions (blend parameters over time)
+        // - Update transition progress
+
+        if (!exhibition_mode_active) {
+            return;
+        }
+
+        unsigned long current_time = millis();
+        unsigned long elapsed = current_time - scene_start_time;
+
+        // Check if scene has expired
+        if (elapsed >= scene_duration) {
+            // Load next scene
+            int next_scene = (current_scene_index + 1) % SCENE_COUNT;
+            loadScene(next_scene);
+        }
+
+        // TODO: Handle transition blending
+        if (in_transition) {
+            // updateTransition();
+        }
+    }
+
+    // ========================================================================
+    // PLACEHOLDER: Apply scene parameters with transition blending
+    // ========================================================================
+    void applySceneParameters(const SceneProfile& scene, float blend_factor) {
+        // TODO: Implement parameter application with blending
+        // - blend_factor: 0.0 = prev scene, 1.0 = new scene
+        // - Interpolate between prev and new parameters
+        // - Apply to global motor control variables
+        // - Update Perlin noise intensities
+
+        // Example:
+        // auto_cycle_time = lerp(prev_cycle_time, scene.cycle_time, blend_factor);
+        // auto_push_velocity = lerp(prev_push_velocity, scene.push_velocity, blend_factor);
+        // ... etc
+    }
+
+    // ========================================================================
+    // PLACEHOLDER: Handle transition updates
+    // ========================================================================
+    void updateTransition() {
+        // TODO: Implement transition blending
+        // - Calculate transition progress (0.0 to 1.0)
+        // - Apply easing curve (smoothstep for FADE transitions)
+        // - Call applySceneParameters with blend_factor
+        // - Check if transition is complete
+
+        unsigned long elapsed = millis() - transition_start_time;
+        float progress = (float)elapsed / (float)transition_duration_ms;
+
+        if (progress >= 1.0) {
+            // Transition complete
+            in_transition = false;
+            progress = 1.0;
+        }
+
+        // Apply easing curve (smoothstep)
+        float blend_factor = progress * progress * (3.0 - 2.0 * progress);
+
+        // applySceneParameters(SCENE_LIBRARY[current_scene_index], blend_factor);
+    }
+
+    // ========================================================================
+    // PLACEHOLDER: Get current scene info
+    // ========================================================================
+    const char* getCurrentSceneName() {
+        if (current_scene_index >= 0 && current_scene_index < SCENE_COUNT) {
+            return SCENE_LIBRARY[current_scene_index].name;
+        }
+        return "None";
+    }
+
+    int getCurrentSceneIndex() {
+        return current_scene_index;
+    }
+
+    int getSceneTimeRemaining() {
+        unsigned long elapsed = millis() - scene_start_time;
+        int remaining = (scene_duration - elapsed) / 1000;  // Convert to seconds
+        return remaining > 0 ? remaining : 0;
+    }
+
+    // ========================================================================
+    // PLACEHOLDER: Manual scene selection (for testing)
+    // ========================================================================
+    void selectScene(int scene_index) {
+        // TODO: Implement manual scene selection
+        // - Validate scene index
+        // - Load scene immediately
+        // - Start scene timer
+
+        loadScene(scene_index);
+    }
+
+    // ========================================================================
+    // PLACEHOLDER: Helper function for linear interpolation
+    // ========================================================================
+    float lerp(float a, float b, float t) {
+        return a + (b - a) * t;
+    }
+
+    int lerp(int a, int b, float t) {
+        return (int)(a + (b - a) * t);
+    }
+};
+
+// ============================================================================
+// GLOBAL SCENE MANAGER INSTANCE
+// ============================================================================
+// TODO: Create global instance and integrate with main.cpp
+// SceneManager sceneManager;
+
+// ============================================================================
+// ENCODER CONTROL ADDITIONS FOR SCENE SELECTION
+// ============================================================================
+// TODO: Add encoder controls in main.cpp:
+// - CH8 button + encoder: select scene (0-10)
+// - CH7 button: toggle exhibition mode on/off
+// - Display: show current scene name and time remaining
+
+// ============================================================================
+// DISPLAY ADDITIONS FOR SCENE INFO
+// ============================================================================
+// TODO: Add to display in auto mode:
+// M5.Display.setCursor(10, 240);
+// if (exhibition_mode_active) {
+//     M5.Display.printf("Scene: %s (%ds left)",
+//                       sceneManager.getCurrentSceneName(),
+//                       sceneManager.getSceneTimeRemaining());
+// } else {
+//     M5.Display.printf("Exhibition: OFF");
+// }
+
+// ============================================================================
+// FUTURE ENHANCEMENTS
+// ============================================================================
+// 1. SD Card storage: Load scenes from JSON files
+// 2. Scene editor: Web interface to create/edit scenes
+// 3. Random scene order: Shuffle instead of sequential
+// 4. Scene tags: Group scenes by mood (calm, energetic, chaotic)
+// 5. Time-of-day scheduling: Different scenes for morning/afternoon/evening
+// 6. Audio reactive: Modify parameters based on microphone input
+// 7. Multi-motor choreography: Synchronize multiple installations
+// 8. Scene history: Don't repeat recent scenes
+// 9. Smooth loop detection: Ensure scenes loop seamlessly
+// 10. Emergency stop: Safety override for all exhibition modes
+
+// ============================================================================
+// NOTES FOR IMPLEMENTATION
+// ============================================================================
+// Integration steps:
+// 1. Copy SceneProfile struct and SCENE_LIBRARY to main.cpp
+// 2. Copy SceneManager class to main.cpp
+// 3. Create global sceneManager instance
+// 4. Add encoder controls for scene selection
+// 5. Call sceneManager.update() in loop()
+// 6. Apply scene parameters to existing motor control variables
+// 7. Test each scene individually first
+// 8. Test transitions between scenes
+// 9. Test full exhibition mode sequence
+// 10. Tune scene parameters based on real water behavior
