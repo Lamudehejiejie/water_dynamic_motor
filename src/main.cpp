@@ -62,6 +62,74 @@ float perlin_intensity_velocity = 0.2;    // ±15% velocity variation
 float perlin_intensity_stroke = 50;        // ±50 units stroke variation
 float perlin_intensity_interval = 200;     // ±200ms interval variation
 
+// ============================================================================
+// SCENE PROFILE SYSTEM - Pre-defined motion profiles for exhibition
+// ============================================================================
+struct SceneProfile {
+    const char* name;
+    int duration_seconds;      // How long to play this scene (in seconds)
+    int cycle_time;
+    int push_velocity;
+    int push_acceleration;
+    int return_velocity;
+    int return_acceleration;
+    int push_ratio;
+    int stroke_range;
+    int cycle_interval;
+    float perlin_intensity_velocity;
+    float perlin_intensity_stroke;
+    float perlin_intensity_interval;
+};
+
+const SceneProfile SCENE_LIBRARY[] = {
+    // name, duration(s), cycle_time, push_vel, push_acc, ret_vel, ret_acc, push_ratio, stroke, interval, perlin_vel, perlin_str, perlin_int
+    {"0 Calm Breath", 5, 2000, 100, 50, 80, 40, 40, 300, 3000, 0.05, 20, 500},
+    {"1 Morning Ripples", 14, 3500, 300, 200, 120, 100, 30, 512, 1500, 0.15, 50, 300},
+    {"2 Playful Dance", 13, 2000, 550, 450, 200, 180, 25, 800, 500, 0.30, 100, 200},
+    {"3 Ocean Swell", 6, 5000, 450, 400, 100, 80, 20, 1500, 2000, 0.20, 80, 400},
+    {"4 Rainfall", 14, 2500, 400, 350, 150, 120, 35, 600, 800, 0.40, 150, 600},
+    {"5 Meditation", 19, 4000, 50, 30, 40, 25, 50, 200, 5000, 0.02, 10, 1000},
+    {"6 Storm Building", 13, 2200, 500, 450, 180, 150, 22, 1000, 400, 0.35, 120, 300},
+    {"7 Gentle Lapping", 15, 4000, 250, 150, 90, 70, 35, 400, 1800, 0.10, 30, 400},
+    {"8 Heartbeat", 13, 1800, 450, 400, 200, 180, 30, 500, 200, 0.12, 40, 100},
+    {"9 Tidal Flow", 7, 7000, 300, 200, 60, 50, 15, 1200, 3500, 0.08, 60, 800},
+    {"10 Chaos Theory", 10, 200, 400, 300, 150, 120, 30, 700, 1000, 0.50, 200, 800}
+};
+
+const int SCENE_COUNT = sizeof(SCENE_LIBRARY) / sizeof(SceneProfile);
+
+// ============================================================================
+// SCENE MANAGER - Automatic scene switching
+// ============================================================================
+enum PlaybackMode {
+    MANUAL = 0,      // Manual scene selection (no auto-switch)
+    SEQUENTIAL = 1,  // Play scenes in order: 0→1→2→...→10→0
+    RANDOM = 2       // Play scenes in random order with weighted selection
+};
+
+// Scene manager configuration
+PlaybackMode playback_mode = RANDOM;  // Change to: MANUAL, SEQUENTIAL, or RANDOM
+int current_scene_index = 0;
+unsigned long scene_start_time = 0;
+bool scene_manager_active = false;
+
+// Helper function: Get next scene index based on playback mode
+int getNextSceneIndex() {
+    if (playback_mode == SEQUENTIAL) {
+        // Sequential: 0→1→2→...→10→0
+        return (current_scene_index + 1) % SCENE_COUNT;
+    } else if (playback_mode == RANDOM) {
+        // Random: pick a random scene (different from current)
+        int next = random(0, SCENE_COUNT);
+        while (next == current_scene_index && SCENE_COUNT > 1) {
+            next = random(0, SCENE_COUNT);
+        }
+        return next;
+    } else {
+        // MANUAL mode: don't auto-switch
+        return current_scene_index;
+    }
+}
 
 // The flow: M5Stack (TTL) → DMX Base (TTL→RS485) → Motor (RS485)
 // M5Stack DMX Base Pin Configuration for CoreS3:
@@ -155,8 +223,8 @@ void setup() {
     // Initialize M5Stack hardware AFTER I2C cleanup
     auto cfg = M5.config();
     M5.begin(cfg);
+    delay(200);                   // wait a bit
     M5.Power.setExtOutput(true);  // turn on Grove 5V, 
-    delay(1000);                   // wait a bit
 
     for (int i = 0; i < 3; i++) {
         Wire.begin(2, 1);
@@ -367,17 +435,68 @@ void loop() {
     M5.update();  // Update M5Stack internal state (buttons, etc.)
 
     // ========================================================================
-    // SAFE MODE - Run default auto mode if encoder not found
+    // SCENE MODE - Run scene profiles with automatic switching
     // ========================================================================
     if (!encoder_found) {
-        // Force auto mode on with default settings (±45° for XW540)
+        // Initialize scene manager on first entry
         if (!auto_mode_active) {
             auto_mode_active = true;
+            scene_manager_active = true;
+            scene_start_time = millis();
             cycle_start_time = millis();
-            auto_stroke_range = 512;  // ±45 degrees (512 units)
 
-            // Always center at 2048 in safe mode too
+            // Load initial scene profile parameters
+            const SceneProfile& scene = SCENE_LIBRARY[current_scene_index];
+            auto_cycle_time = scene.cycle_time;
+            auto_push_velocity = scene.push_velocity;
+            auto_push_acceleration = scene.push_acceleration;
+            auto_return_velocity = scene.return_velocity;
+            auto_return_acceleration = scene.return_acceleration;
+            auto_push_ratio = scene.push_ratio;
+
+            // Apply stroke range limit: max 1500
+            auto_stroke_range = scene.stroke_range;
+            if (auto_stroke_range > 1500) auto_stroke_range = 1500;
+            if (auto_stroke_range < 8) auto_stroke_range = 8;
+
+            auto_cycle_interval = scene.cycle_interval;
+            perlin_intensity_velocity = scene.perlin_intensity_velocity;
+            perlin_intensity_stroke = scene.perlin_intensity_stroke;
+            perlin_intensity_interval = scene.perlin_intensity_interval;
+
+            // Always center at 2048 in scene mode
             auto_mode_center_position = CENTER_POSITION;
+        }
+
+        // Check if scene duration expired and switch to next scene
+        if (playback_mode != MANUAL) {
+            unsigned long scene_elapsed = (millis() - scene_start_time) / 1000;  // Convert to seconds
+            const SceneProfile& current_scene = SCENE_LIBRARY[current_scene_index];
+
+            if (scene_elapsed >= current_scene.duration_seconds) {
+                // Time to switch to next scene!
+                int next_scene_index = getNextSceneIndex();
+                const SceneProfile& next_scene = SCENE_LIBRARY[next_scene_index];
+
+                // Switch to next scene
+                current_scene_index = next_scene_index;
+                scene_start_time = millis();
+
+                // Apply new scene parameters immediately (SUDDEN transition)
+                auto_cycle_time = next_scene.cycle_time;
+                auto_push_velocity = next_scene.push_velocity;
+                auto_push_acceleration = next_scene.push_acceleration;
+                auto_return_velocity = next_scene.return_velocity;
+                auto_return_acceleration = next_scene.return_acceleration;
+                auto_push_ratio = next_scene.push_ratio;
+                auto_stroke_range = next_scene.stroke_range;
+                if (auto_stroke_range > 1500) auto_stroke_range = 1500;
+                if (auto_stroke_range < 8) auto_stroke_range = 8;
+                auto_cycle_interval = next_scene.cycle_interval;
+                perlin_intensity_velocity = next_scene.perlin_intensity_velocity;
+                perlin_intensity_stroke = next_scene.perlin_intensity_stroke;
+                perlin_intensity_interval = next_scene.perlin_intensity_interval;
+            }
         }
 
         // Calculate cycle timing
@@ -387,17 +506,30 @@ void loop() {
 
         int push_time = (auto_cycle_time * auto_push_ratio) / 100;
 
+        // Apply Perlin noise to stroke range with safety limits
+        float perlin_str = perlin_stroke.getValue();
+        int stroke_with_noise = auto_stroke_range + (int)(perlin_str * perlin_intensity_stroke);
+
+        // Safety limit 1: Keep stroke within reasonable bounds (max 1500)
+        if (stroke_with_noise < 8) stroke_with_noise = 8;
+        if (stroke_with_noise > 1500) stroke_with_noise = 1500;
+
+        // Safety limit 2: Ensure resulting position won't go below 0
+        if (auto_mode_center_position - stroke_with_noise < 0) {
+            stroke_with_noise = auto_mode_center_position;
+        }
+
         int target_position;
         int target_velocity;
         int target_acceleration;
 
         if (time_in_cycle < push_time) {
-            // PUSH STROKE - push down from wall (like auto mode)
-            target_position = auto_mode_center_position - auto_stroke_range;
+            // PUSH STROKE - push down from wall (with Perlin noise)
+            target_position = auto_mode_center_position - stroke_with_noise;
             target_velocity = auto_push_velocity;
             target_acceleration = auto_push_acceleration;
         } else {
-            // RETURN STROKE - return to wall position (like auto mode)
+            // RETURN STROKE - return to wall position
             target_position = auto_mode_center_position;
             target_velocity = auto_return_velocity;
             target_acceleration = auto_return_acceleration;
@@ -425,18 +557,33 @@ void loop() {
         int32_t present_velocity = dxl.getPresentVelocity(DXL_ID);
         uint8_t moving_status = dxl.readControlTableItem(ADDR_MOVING, DXL_ID);
 
-        M5.Display.setCursor(10, 110);
-        M5.Display.printf("=== SAFE MODE (AUTO) ===     ");
-        M5.Display.setCursor(10, 130);
+        // Calculate time remaining in current scene
+        unsigned long scene_elapsed = (millis() - scene_start_time) / 1000;
+        int time_remaining = SCENE_LIBRARY[current_scene_index].duration_seconds - scene_elapsed;
+        if (time_remaining < 0) time_remaining = 0;
+
+        // Display playback mode
+        const char* mode_name = (playback_mode == MANUAL) ? "MANUAL" :
+                               (playback_mode == SEQUENTIAL) ? "SEQUENTIAL" : "RANDOM";
+
+        M5.Display.setCursor(10, 10);
+        M5.Display.printf("=== SCENE MODE: %s ===     ", mode_name);
+        M5.Display.setCursor(10, 30);
+        M5.Display.printf("Scene %d: %s     ", current_scene_index, SCENE_LIBRARY[current_scene_index].name);
+        M5.Display.setCursor(10, 50);
+        M5.Display.printf("Time left: %ds     ", time_remaining);
+        M5.Display.setCursor(10, 90);
         M5.Display.printf("Wall: %d  Stroke: -%ddeg      ", auto_mode_center_position, (auto_stroke_range * 360) / MAX_POSITION);
-        M5.Display.setCursor(10, 150);
+        M5.Display.setCursor(10, 110);
         M5.Display.printf("Target: %d       ", target_position);
-        M5.Display.setCursor(10, 170);
+        M5.Display.setCursor(10, 130);
         M5.Display.printf("Current: %d       ", present_position);
-        M5.Display.setCursor(10, 190);
+        M5.Display.setCursor(10, 150);
         M5.Display.printf("Vel: %d  Move: %s      ", present_velocity, moving_status ? "YES" : "NO");
-        M5.Display.setCursor(10, 210);
+        M5.Display.setCursor(10, 170);
         M5.Display.printf("V:%d A:%d      ", target_velocity, target_acceleration);
+        M5.Display.setCursor(10, 190);
+        M5.Display.printf("Cycle:%dms Int:%dms    ", auto_cycle_time, auto_cycle_interval);
 
         delay(1000/120.);
         return;  // Skip normal encoder-based control
@@ -598,33 +745,6 @@ void loop() {
  
         // Enable encoder control immediately since we're preserving values
         
-        
-        // ----------------------------------------------------------------
-        // ENCODER CONTROLS FOR AUTO MODE
-        // ----------------------------------------------------------------
-        // Update auto mode parameters from encoder values
-        if (!auto_mode_homed)
-        {
-            //int wall_motor_position = CENTER_POSITION +  (WALL_ALIGNED_CH1 * POSITION_SCALE);
-            int32_t current_pos = dxl.getPresentPosition(DXL_ID);
-            if (abs(current_pos - wall_motor_position) < 10)
-            {
-                auto_mode_homed = true;
-                cycle_start_time = millis();
-            }
-            return;
-            // M5.Display.setCursor(10, 90);
-            // M5.Display.printf("HOMING...                    ");
-            // M5.Display.setCursor(10, 110);
-            // M5.Display.printf("Current: %ld Target: %d      ",
-            // current_pos, wall_motor_position);
-            // M5.Display.setCursor(10, 130);
-            // M5.Display.printf("Distance: %ld                ",
-            // abs(current_pos - wall_motor_position));
-        }
-
-    if (auto_mode_homed)
-    {
         if (use_encoder_control) {
             // CH1: CYCLE TIME (adjust from default 3000ms, range: 1000-8000ms)
             auto_cycle_time = 3000 + (encoder_ch1_value * 25);  // 25ms per encoder click
@@ -635,7 +755,7 @@ void loop() {
             auto_push_velocity = 500 + (encoder_ch2_value * 2.5);
             if (auto_push_velocity < 10) auto_push_velocity = 10;
             if (auto_push_velocity > 600) auto_push_velocity = 600;
-
+            
             // CH3: PUSH ACCELERATION (adjust from default 500, range: 10-600)
             auto_push_acceleration = 500 + (encoder_ch3_value * 2.5);
             if (auto_push_acceleration < 10) auto_push_acceleration = 10;
@@ -661,8 +781,8 @@ void loop() {
             // ============================================================================
             // MAX_STROKE_LIMIT!!
             // ============================================================================
-            const int MAX_STROKE_LIMIT = MANUAL_LOCK_POSITION;  // Maximum 2048 to prevent exceeding 0-4095 range when centered at 2048
-            if (auto_stroke_range > MAX_STROKE_LIMIT) auto_stroke_range = MAX_STROKE_LIMIT;
+            const int MAX_STROKE_LIMIT = 1500;  // Maximum 2048 to prevent exceeding 0-4095 range when centered at 2048
+            if (auto_stroke_range > 1500) auto_stroke_range = 1500;
             if (auto_stroke_range < 8) auto_stroke_range = 8;
 
             //CH8: interval between cycle
@@ -671,6 +791,25 @@ void loop() {
             if (auto_cycle_interval < 0) auto_cycle_interval = 0;
         }
    
+        // ----------------------------------------------------------------
+        // ENCODER CONTROLS FOR AUTO MODE
+        // ----------------------------------------------------------------
+        // Update auto mode parameters from encoder values
+        if (!auto_mode_homed)
+        {
+            //int wall_motor_position = CENTER_POSITION +  (WALL_ALIGNED_CH1 * POSITION_SCALE);
+            int32_t current_pos = dxl.getPresentPosition(DXL_ID);
+            if (abs(current_pos - wall_motor_position) < 10)
+            {
+                auto_mode_homed = true;
+                cycle_start_time = millis();          
+            } 
+            return;
+        }
+
+    if (auto_mode_homed)
+    {
+
         // CH1 Button: Reset all encoders to restore defaults
         static bool last_ch1_button = false;
         if (encoder_ch1_button && !last_ch1_button) {
@@ -740,7 +879,7 @@ void loop() {
 
         // Safety limit 1: Keep stroke within reasonable bounds
         if (stroke_with_noise < 8) stroke_with_noise = 8;
-        if (stroke_with_noise > 2048) stroke_with_noise = 2048;
+        if (stroke_with_noise > 1500) stroke_with_noise = 1500;
 
         // Safety limit 2: Ensure resulting position won't go below 0
         // Position will be: auto_mode_center_position - stroke_with_noise
@@ -804,10 +943,13 @@ void loop() {
             current_velocity = target_velocity;
         }
 
+
+
         if (target_acceleration != current_acceleration) {
             dxl.setProfileAcceleration(DXL_ID, target_acceleration);
             current_acceleration = target_acceleration;
         }
+
 
         // Send target position
         dxl.setGoalPosition(DXL_ID, target_position);
@@ -944,7 +1086,7 @@ void loop() {
 
                         
         M5.Display.setCursor(10, 220);
-        if (stroke_angle >= 180) {
+        if (stroke_angle >= 130) {
             M5.Display.printf("LIMIT: +-%d deg (MAX)     ", stroke_angle);
         } else {
             M5.Display.printf("Range: +-%d deg          ", stroke_angle);
