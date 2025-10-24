@@ -181,8 +181,11 @@ const int POSITION_SCALE = 34;     // Scale factor: 34 (0.5x for higher resoluti
 // ============================================================================
 // WALL POSITION & SAFE LOCK POSITION
 // ============================================================================
+//i have a question. now I changed WALL_ALIGNED_CH1 value, and I will keep changing it for test. So I want to make
+// sure the WALL_ALIGNED_CH1 is setting the limit both  to auto-mode and scene-mode right?
 
-const int WALL_ALIGNED_CH1 = 0;  // Wall position at CH1=0 (center position 2048)
+//great I just changed it. Do you think I can change the homing position also  to CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE); to both manual, auto, scene, and will it be safe that the motor in any kind of time will not go bigger than CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE); and smaller than 552. 
+const int WALL_ALIGNED_CH1 = -1;  // Wall position at CH1=0 (center position 2048)
 const int MANUAL_LOCK_POSITION = CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE);
 
 // Manual mode control variables
@@ -255,10 +258,10 @@ void setup() {
     for (int retry = 0; retry < 25; retry++) {  // Reduced from 50 to 25
         // Every 5th retry, do a full I2C reset
         if (retry > 0 && retry % 5 == 0) {
-            M5.Display.setCursor(10, 40);
+            M5.Display.setCursor(10, 45);
             M5.Display.printf("Retry %d - Deep reset...    ", retry);
             M5.Display.setCursor(10, 60);
-            M5.Display.println("Try unplug encoder if stuck");
+            M5.Display.println("Try replug encoder if stuck");
             // Complete I2C bus reset
             Wire.end();
             delay(300);  // Reduced from 1000ms
@@ -296,17 +299,11 @@ void setup() {
     if (!encoder_found) {
         M5.Display.clear();
         M5.Display.setCursor(10, 10);
-        M5.Display.println("=== WARNING ===");
+        M5.Display.println("=== SCENE MODE ===");
         M5.Display.setCursor(10, 30);
         M5.Display.println("Encoder NOT found!");
         M5.Display.setCursor(10, 50);
-        M5.Display.println("Entering SAFE MODE...");
-        M5.Display.setCursor(10, 70);
-        M5.Display.println("Wall: 2048 (180deg)");
-        M5.Display.setCursor(10, 90);
-        M5.Display.println("Stroke: -45deg only");
-        M5.Display.setCursor(10, 110);
-        M5.Display.println("No manual control");
+        M5.Display.println("Entering SCENE MODE...");
         delay(3000);
         // Continue without encoder - will use default auto mode
     }
@@ -315,9 +312,6 @@ void setup() {
 
     dxl.begin(DXL_BAUD_RATE);
     dxl.setPortProtocolVersion(DXL_PROTOCOL_VERSION);
-
-    M5.Display.setCursor(10, 30);
-    M5.Display.println("Pinging motor...");
 
     // ========================================================================
     // FIND AND CONFIGURE MOTOR
@@ -374,23 +368,15 @@ void setup() {
         M5.Display.setCursor(10, 110);
 
         if (torque_check == 1) {
-            M5.Display.println("Ready! Torque ON");
+            // M5.Display.println("Ready! Torque ON");
             dxl.ledOn(DXL_ID);
             // Encoder already reset during initialization
         } else {
 
         }
     } else {
-        M5.Display.setCursor(10, 50);
+        M5.Display.setCursor(10, 60);
         M5.Display.println("Motor NOT found!");
-        M5.Display.setCursor(10, 70);
-        M5.Display.println("Check:");
-        M5.Display.setCursor(10, 90);
-        M5.Display.println("- Power (12V)");
-        M5.Display.setCursor(10, 110);
-        M5.Display.println("- Wiring (A/B)");
-        M5.Display.setCursor(10, 130);
-        M5.Display.println("- Baud: 57600");
     }
 
     // ========================================================================
@@ -416,7 +402,7 @@ void setup() {
             M5.Display.println("Homed to center (2048)");
             delay(1000);
         } else {
-            M5.Display.setCursor(10, 175);
+            M5.Display.setCursor(10, 185);
             M5.Display.println("Position OK, no homing needed");
             delay(1000);
         }
@@ -465,7 +451,8 @@ void loop() {
             perlin_intensity_interval = scene.perlin_intensity_interval;
 
             // Always center at 2048 in scene mode
-            auto_mode_center_position = CENTER_POSITION;
+            wall_motor_position = CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE);
+            auto_mode_center_position = wall_motor_position;
         }
 
         // Check if scene duration expired and switch to next scene
@@ -1001,7 +988,7 @@ void loop() {
             M5.Display.printf("Wall Pos: %d (CH1=%d)     ",
             wall_position_calc, WALL_ALIGNED_CH1);
 
-            M5.Display.setCursor(10, 40);
+            M5.Display.setCursor(10, 45);
             int current_ch1_position = CENTER_POSITION +
             (encoder_ch1_value * POSITION_SCALE);
             M5.Display.printf("CH1 Pos: %d     ",
