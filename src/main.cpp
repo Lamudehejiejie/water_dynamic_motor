@@ -176,9 +176,7 @@ const int POSITION_SCALE = 34;     // Scale factor: 34 (0.5x for higher resoluti
 // ============================================================================
 // WALL POSITION & SAFE LOCK POSITION
 // ============================================================================
-
-//great I just changed it. Do you think I can change the homing position also  to CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE); to both manual, auto, scene, and will it be safe that the motor in any kind of time will not go bigger than CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE); and smaller than 552. 
-const int WALL_ALIGNED_CH1 = 10;  // -35 -6 Wall position at CH1=0 (center position 2048)
+const int WALL_ALIGNED_CH1 = 14;  // -35 -6 Wall position at CH1=0 (center position 2048)
 const int MANUAL_LOCK_POSITION = CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE);
 
 // Manual mode control variables
@@ -1018,7 +1016,7 @@ void loop() {
         int cycle_progress = (time_in_cycle * 100) / auto_cycle_time;
 
         int push_time = (auto_cycle_time * auto_push_ratio) / 100;
-        int stroke_angle = (auto_stroke_range * 360) / MAX_POSITION;  // Convert to degrees
+        int stroke_ch1_clicks = auto_stroke_range / POSITION_SCALE;  // Convert to CH1 clicks 
 
         M5.Display.setCursor(10, 100);
         M5.Display.println("=== AUTO MODE ===");
@@ -1087,10 +1085,10 @@ void loop() {
 
                         
         M5.Display.setCursor(10, 220);
-        if (stroke_angle >= 130) {
-            M5.Display.printf("LIMIT: +-%d deg (MAX)     ", stroke_angle);
+        if (stroke_ch1_clicks >= 44 - WALL_ALIGNED_CH1) {
+            M5.Display.printf("LIMIT: +-%d CH1 (MAX)     ", stroke_ch1_clicks);
         } else {
-            M5.Display.printf("Range: +-%d deg          ", stroke_angle);
+            M5.Display.printf("Range: +-%d CH1          ", stroke_ch1_clicks);
         }
         }
 
