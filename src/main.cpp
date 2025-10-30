@@ -83,11 +83,7 @@ struct SceneProfile {
 
 const SceneProfile SCENE_LIBRARY[] = {
     // name, duration(s), cycle_time, push_vel, push_acc, ret_vel, ret_acc, push_ratio, stroke, interval, perlin_vel, perlin_str, perlin_int
-    {"Calm Breath", 5, 2000, 100, 50, 80, 40, 50, 300, 3000, 0,0,0},
-    {"Morning Ripples", 14, 3500, 300, 200, 120, 100, 50, 512, 1500, 0,0,0},
-    {"Playful Dance", 13, 2000, 550, 450, 200, 180, 50, 800, 500, 0,0,0},
-    {"Ocean Swell", 6, 5000, 450, 400, 100, 80, 50, 1500, 2000, 0,0,0},
-    {"Chaos Theory", 10, 200, 400, 300, 150, 120, 50, 700, 1000, 0,0,0}
+    {"piece of rest", 999999, 484, 52, 600, 50, 600, 50, 1054, 0, 0,0,0},
 };
 
 const int SCENE_COUNT = sizeof(SCENE_LIBRARY) / sizeof(SceneProfile);
@@ -102,7 +98,7 @@ enum PlaybackMode {
 };
 
 // Scene manager configuration
-PlaybackMode playback_mode = RANDOM;  // Change to: MANUAL, SEQUENTIAL, or RANDOM
+PlaybackMode playback_mode = SEQUENTIAL;  // Change to: MANUAL, SEQUENTIAL, or RANDOM
 int current_scene_index = 0;
 unsigned long scene_start_time = 0;
 bool scene_manager_active = false;
