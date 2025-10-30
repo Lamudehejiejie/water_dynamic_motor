@@ -166,8 +166,8 @@ UNIT_8ENCODER encoder;           // Create encoder object
 bool encoder_found = false;        // Flag: encoder detected and working?
 const int MAX_POSITION = 4095;     // XW540-T260-R: 4095 = 360° (one full rotation)
 const int CENTER_POSITION = 2048;  // Center position (180°) - safe starting point
-const int MAX_POSITION_LIMIT = 3544;  // Hard limit: never exceed one full rotation
-                                   // 0 = 0°, 2048 = 180°, 4095 = 360°
+const int MAX_POSITION_LIMIT = 3374;  // Hard limit: never exceed one full rotation
+                                   // 0 = 0°, 2048 = 180°, 4095 = 360° 44= 3544
 const int MIN_SAFE_POSITION = 552; // Minimum safe position - prevents going too low
 //tenkii, change here!
 const int ENCODER_CH1_RANGE = 44;  // CH1 encoder range: -44 to +44(44 clicks total, safety limited)
@@ -381,6 +381,10 @@ void setup() {
         // Calculate wall position
         int wall_home_position = CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE);
 
+        // Safety clamp for homing position (in case constants are changed)
+        if (wall_home_position < MIN_SAFE_POSITION) wall_home_position = MIN_SAFE_POSITION;
+        if (wall_home_position > MAX_POSITION_LIMIT) wall_home_position = MAX_POSITION_LIMIT;
+
         int32_t current_position = dxl.getPresentPosition(DXL_ID);
 
         M5.Display.setCursor(10, 155);
@@ -392,7 +396,7 @@ void setup() {
             M5.Display.setCursor(10, 185);
             M5.Display.println("OUT OF RANGE. Homing...");
 
-            // Home to wall position
+            // Home to wall position (already clamped to safe range)
             dxl.setGoalPosition(DXL_ID, wall_home_position);
             delay(3000);  // Wait for motor to reach wall position
 
@@ -448,9 +452,9 @@ void loop() {
             perlin_intensity_stroke = scene.perlin_intensity_stroke;
             perlin_intensity_interval = scene.perlin_intensity_interval;
 
-            // Always center at 2048 in scene mode
+            // Always start at MAX_POSITION_LIMIT in scene mode
             wall_motor_position = CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE);
-            auto_mode_center_position = wall_motor_position;
+            auto_mode_center_position = MAX_POSITION_LIMIT;  // Start at maximum position
         }
 
         // Check if scene duration expired and switch to next scene
@@ -499,9 +503,9 @@ void loop() {
         if (stroke_with_noise < 8) stroke_with_noise = 8;
         if (stroke_with_noise > 1500) stroke_with_noise = 1500;
 
-        // Safety limit 2: Ensure resulting position won't exceed MAX_POSITION_LIMIT
-        if (auto_mode_center_position + stroke_with_noise > MAX_POSITION_LIMIT) {
-            stroke_with_noise = MAX_POSITION_LIMIT - auto_mode_center_position;
+        // Safety limit 2: Ensure resulting position won't go below MIN_SAFE_POSITION
+        if (auto_mode_center_position - stroke_with_noise < MIN_SAFE_POSITION) {
+            stroke_with_noise = auto_mode_center_position - MIN_SAFE_POSITION;
         }
 
         int target_position;
@@ -509,12 +513,12 @@ void loop() {
         int target_acceleration;
 
         if (time_in_cycle < push_time) {
-            // PUSH STROKE - push up from wall (with Perlin noise)
-            target_position = auto_mode_center_position + stroke_with_noise;
+            // PUSH STROKE - push down from MAX_POSITION_LIMIT (DOWNWARD motion with Perlin noise)
+            target_position = auto_mode_center_position - stroke_with_noise;
             target_velocity = auto_push_velocity;
             target_acceleration = auto_push_acceleration;
         } else {
-            // RETURN STROKE - return to wall position
+            // RETURN STROKE - return to MAX_POSITION_LIMIT (UPWARD motion)
             target_position = auto_mode_center_position;
             target_velocity = auto_return_velocity;
             target_acceleration = auto_return_acceleration;
@@ -728,15 +732,15 @@ void loop() {
             // Keep encoder values preserved when switching modes
             // (encoders are NOT reset, parameters persist across mode switches)
 
-            // CRITICAL: Always center auto mode at 2048 (center position)
-            // This prevents dangerous wrap-around at 0/4095 boundary
-            
+            // CRITICAL: Always start auto mode at MAX_POSITION_LIMIT
+            // Motion will move DOWNWARD from this position
+
             wall_motor_position = CENTER_POSITION + (WALL_ALIGNED_CH1 * POSITION_SCALE);
-            auto_mode_center_position = wall_motor_position;
+            auto_mode_center_position = MAX_POSITION_LIMIT;  // Start at maximum position
             // Start cycle timing from current position (no homing)
             dxl.setProfileVelocity(DXL_ID, auto_return_velocity);
             dxl.setProfileAcceleration(DXL_ID, auto_return_acceleration);
-            dxl.setGoalPosition(DXL_ID, wall_motor_position);
+            dxl.setGoalPosition(DXL_ID, MAX_POSITION_LIMIT);  // Move to max position first
 
             
         }
@@ -880,11 +884,11 @@ void loop() {
         if (stroke_with_noise < 8) stroke_with_noise = 8;
         if (stroke_with_noise > 1500) stroke_with_noise = 1500;
 
-        // Safety limit 2: Ensure resulting position won't exceed MAX_POSITION_LIMIT
-        // Position will be: auto_mode_center_position + stroke_with_noise
-        // Must ensure: auto_mode_center_position + stroke_with_noise <= MAX_POSITION_LIMIT
-        if (auto_mode_center_position + stroke_with_noise > MAX_POSITION_LIMIT) {
-            stroke_with_noise = MAX_POSITION_LIMIT - auto_mode_center_position;  // Limit to prevent exceeding maximum
+        // Safety limit 2: Ensure resulting position won't go below MIN_SAFE_POSITION
+        // Position will be: auto_mode_center_position - stroke_with_noise
+        // Must ensure: auto_mode_center_position - stroke_with_noise >= MIN_SAFE_POSITION
+        if (auto_mode_center_position - stroke_with_noise < MIN_SAFE_POSITION) {
+            stroke_with_noise = auto_mode_center_position - MIN_SAFE_POSITION;  // Limit to prevent going too low
         }
 
         // ----------------------------------------------------------------
@@ -896,10 +900,10 @@ void loop() {
 
         if (time_in_cycle < push_time) {
             // ============================================================
-            // PUSH STROKE: FAST - creates water ripple
+            // PUSH STROKE: FAST - creates water ripple (DOWNWARD motion)
             // ============================================================
             // Calculate position with Perlin noise variation on stroke
-            target_position = auto_mode_center_position + stroke_with_noise;
+            target_position = auto_mode_center_position - stroke_with_noise;
 
             // Apply Perlin noise to push velocity (multiplicative)
             float velocity_multiplier = 1.0 + (perlin_vel * perlin_intensity_velocity);
@@ -915,9 +919,9 @@ void loop() {
 
         } else {
             // ============================================================
-            // RETURN STROKE: SLOW - gentle return
+            // RETURN STROKE: SLOW - gentle return (UPWARD motion)
             // ============================================================
-            // Return to wall position (center)
+            // Return to MAX_POSITION_LIMIT (starting position)
             target_position = auto_mode_center_position;
 
             // Apply Perlin noise to return velocity too
